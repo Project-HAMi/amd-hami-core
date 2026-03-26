@@ -1,0 +1,5 @@
+build-hip/
+dist/
+*.o
+*.so
+test/test_alloc_tracker
