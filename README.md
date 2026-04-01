@@ -1,8 +1,8 @@
 # amd-hami-core
 
-LD_AUDIT library (`libamvgpu.so`) for AMD GPU memory virtualization in HAMi.
+LD_AUDIT library (`libamvgpu.so`) for AMD GPU slicing for HAMi project.
 Intercepts HIP API calls (`hipMalloc`, `hipFree`, `hipMemGetInfo`) to enforce
-per-pod GPU memory limits and supports multiprocess shared tracking.
+per-pod GPU memory limit and compute unit masking.
 
 ## Build
 
@@ -29,6 +29,9 @@ LD_AUDIT=dist/libamvgpu.so \
   python3 -c "import torch; print(torch.cuda.mem_get_info())"
 
 # Memory limit + CU mask
+# ROC_GLOBAL_CU_MASK limits which compute units the process can use.
+# The mask is a hex bitmask where each bit corresponds to one CU.
+# In HAMi, the scheduler calculates the mask for exclusive CU partitioning.
 LD_AUDIT=dist/libamvgpu.so \
   HIP_DEVICE_MEMORY_LIMIT_0=48G \
   ROC_GLOBAL_CU_MASK=0xFFFFFFFFFFFFFFFFFFF \
