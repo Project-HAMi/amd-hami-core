@@ -22,20 +22,28 @@ docker run --rm -v $(pwd)/dist:/dist libamvgpu-builder
 
 ## Usage
 
-```bash
-# Memory limit only
-LD_AUDIT=dist/libamvgpu.so \
-  HIP_DEVICE_MEMORY_LIMIT_0=4G \
-  python3 -c "import torch; print(torch.cuda.mem_get_info())"
+Requires AMD GPU + ROCm. Clear the shared memory cache before each run
+to avoid stale limits from previous sessions:
 
-# Memory limit + CU mask
+```bash
+rm -f /tmp/hipdevshr.cache
+```
+
+```bash
+# Memory limit test
+rm -f /tmp/hipdevshr.cache
+LD_AUDIT=dist/libamvgpu.so HIP_DEVICE_MEMORY_LIMIT_0=1G LIBHIP_LOG_LEVEL=3 dist/test_memory_limit
+
+# With PyTorch (requires: pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/rocm7.2)
+rm -f /tmp/hipdevshr.cache
+LD_AUDIT=dist/libamvgpu.so HIP_DEVICE_MEMORY_LIMIT_0=4G python3 -c "import torch; print(torch.cuda.mem_get_info())"
+
+# With CU mask
 # ROC_GLOBAL_CU_MASK limits which compute units the process can use.
 # The mask is a hex bitmask where each bit corresponds to one CU.
 # In HAMi, the scheduler calculates the mask for exclusive CU partitioning.
-LD_AUDIT=dist/libamvgpu.so \
-  HIP_DEVICE_MEMORY_LIMIT_0=48G \
-  ROC_GLOBAL_CU_MASK=0xFFFFFFFFFFFFFFFFFFF \
-  ./your_app
+rm -f /tmp/hipdevshr.cache
+LD_AUDIT=dist/libamvgpu.so HIP_DEVICE_MEMORY_LIMIT_0=1G ROC_GLOBAL_CU_MASK=0xFFFFFFFFFFFFFFFFFFF LIBHIP_LOG_LEVEL=3 dist/test_memory_limit
 ```
 
 ### Environment variables
@@ -55,10 +63,8 @@ docker run --rm libamvgpu-builder bash -c \
   "gcc -o /tmp/test test/test_alloc_tracker.c -I src/hip -lpthread && /tmp/test"
 
 # On-GPU test (requires AMD GPU + ROCm)
-LD_AUDIT=dist/libamvgpu.so \
-  HIP_DEVICE_MEMORY_LIMIT_0=1G \
-  LIBHIP_LOG_LEVEL=3 \
-  dist/test_memory_limit
+rm -f /tmp/hipdevshr.cache
+LD_AUDIT=dist/libamvgpu.so HIP_DEVICE_MEMORY_LIMIT_0=1G LIBHIP_LOG_LEVEL=3 dist/test_memory_limit
 ```
 
 ## Verified on
