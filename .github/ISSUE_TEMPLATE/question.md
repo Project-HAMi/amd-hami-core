@@ -8,6 +8,15 @@ labels: question
 
 **What have you already tried or investigated?**:
 
+**Relevant diagnostics, configuration, and commands**:
+
+- AMD SMI or ROCm SMI output:
+- Workload and `libamvgpu.so` logs:
+- Relevant configuration values:
+- Reproduction or build commands:
+
+**How was the question reproduced or verified?**:
+
 Before posting, include only relevant, time-bounded excerpts and remove or mask credentials, tokens, GPU identifiers, PCI addresses, workload identifiers, host paths, and internal image names.
 
 **Environment**:
