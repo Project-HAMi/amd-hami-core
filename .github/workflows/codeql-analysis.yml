@@ -29,7 +29,7 @@ jobs:
     # CMakeLists.txt is the NVIDIA/CUDA one), so build manually inside a ROCm
     # image that has ROCM_HOME set up for Makefile.hip.
     container:
-      image: rocm/dev-ubuntu-22.04:6.2
+      image: rocm/dev-ubuntu-22.04:6.2@sha256:51e0238aaa3aa04c21e13a681194e66d44c653c1005c421b90fcd188d8369549
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

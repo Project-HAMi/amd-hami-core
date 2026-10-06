@@ -22,10 +22,10 @@
 #
 
 # ROCm 7.x requires Ubuntu 24.04 (glibc 2.38+), 6.x uses Ubuntu 22.04.
-# Examples:
+# Examples (unpinned tag is fine for local use; CI pins by digest, see ci.yml):
 #   --build-arg ROCM_IMAGE=rocm/dev-ubuntu-22.04:6.2   (ROCm 6.2)
 #   --build-arg ROCM_IMAGE=rocm/dev-ubuntu-24.04:7.1   (ROCm 7.1)
-ARG ROCM_IMAGE=rocm/dev-ubuntu-22.04:6.2
+ARG ROCM_IMAGE=rocm/dev-ubuntu-22.04:6.2@sha256:51e0238aaa3aa04c21e13a681194e66d44c653c1005c421b90fcd188d8369549
 FROM ${ROCM_IMAGE} AS builder
 
 RUN apt-get update -qq && \
