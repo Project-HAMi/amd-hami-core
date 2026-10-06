@@ -145,7 +145,7 @@ static void ensure_shrreg_init(void) {
         restore_container_env();
     }
     /* Always call hip_shrreg_init(): it's lightweight when already
-     * initialized (pthread_once + flag check), and must be called
+     * initialized (an atomic flag check), and must be called
      * even after first init to trigger the env var retry mechanism
      * for multiprocess scenarios (vLLM/SGLang engine processes). */
     if (hip_shrreg_init() == 0) {
