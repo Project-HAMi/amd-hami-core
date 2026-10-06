@@ -409,12 +409,15 @@ static void register_fork_handler(void) {
 }
 
 int hip_shrreg_init(void) {
-    if (__sync_bool_compare_and_swap(&g_shrreg_init_state, 0, 2)) {
+    /* compiler builtins, not libc calls, so nothing here goes through the
+     * PLT; release/acquire publishes g_shrreg to the waiting threads */
+    int expected = 0;
+    if (__atomic_compare_exchange_n(&g_shrreg_init_state, &expected, 2, 0,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
         do_shrreg_init();
-        __sync_synchronize();
-        g_shrreg_init_state = 1;
+        __atomic_store_n(&g_shrreg_init_state, 1, __ATOMIC_RELEASE);
     } else {
-        while (g_shrreg_init_state == 2)
+        while (__atomic_load_n(&g_shrreg_init_state, __ATOMIC_ACQUIRE) == 2)
             ;
     }
 

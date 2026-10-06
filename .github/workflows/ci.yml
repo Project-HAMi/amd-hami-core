@@ -21,17 +21,31 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Build and run host-side unit tests
         run: |
           set -eu
+          san="-Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=all"
           for t in test_alloc_tracker test_env_policy test_memory_size; do
-            gcc -o /tmp/$t test/$t.c -I src/hip
+            gcc $san -o /tmp/$t test/$t.c -I src/hip
             /tmp/$t
           done
-          for t in test_reserve test_shrreg; do
-            gcc -O2 -pthread -o /tmp/$t test/$t.c src/multiprocess/hip_multiprocess_memory_limit.c
+          for t in test_reserve test_shrreg test_init; do
+            gcc -O2 $san -pthread -o /tmp/$t test/$t.c src/multiprocess/hip_multiprocess_memory_limit.c
             /tmp/$t
+          done
+
+      # The shared region is reached from many threads at once; a data race
+      # there loses or double counts memory, so the threaded tests also run
+      # under ThreadSanitizer (it exits non-zero on any report).
+      - name: Run threaded tests under ThreadSanitizer
+        run: |
+          set -eu
+          for t in test_reserve test_init; do
+            gcc -O1 -g -fsanitize=thread -pthread -o /tmp/${t}_tsan test/$t.c src/multiprocess/hip_multiprocess_memory_limit.c
+            /tmp/${t}_tsan
           done
 
   build:
@@ -48,6 +62,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
@@ -72,6 +88,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4

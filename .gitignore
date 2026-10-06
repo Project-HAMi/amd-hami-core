@@ -7,3 +7,4 @@ test/test_env_policy
 test/test_memory_size
 test/test_reserve
 test/test_shrreg
+test/test_init

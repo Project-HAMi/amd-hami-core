@@ -21,7 +21,8 @@
 #   cd /workspace && make -f Makefile.hip clean all
 #
 
-# ROCm 7.x requires Ubuntu 24.04 (glibc 2.38+), 6.x uses Ubuntu 22.04.
+# ROCm images exist for Ubuntu 22.04 and 24.04; build on the older one to keep
+# the glibc baseline low (amd-device-plugin builds on rocm/dev-ubuntu-22.04:7.2.4).
 # Examples (unpinned tag is fine for local use; CI pins by digest, see ci.yml):
 #   --build-arg ROCM_IMAGE=rocm/dev-ubuntu-22.04:6.2   (ROCm 6.2)
 #   --build-arg ROCM_IMAGE=rocm/dev-ubuntu-24.04:7.1   (ROCm 7.1)

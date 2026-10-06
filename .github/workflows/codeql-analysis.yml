@@ -25,8 +25,8 @@ jobs:
       actions: read
       contents: read
     if: github.repository == 'Project-HAMi/amd-hami-core'
-    # CodeQL's autobuild does not know about Makefile.hip (the HIP/AMD build;
-    # CMakeLists.txt is the NVIDIA/CUDA one), so build manually inside a ROCm
+    # CodeQL's autobuild does not know about Makefile.hip, which links
+    # CMakeLists.txt.hip in as the build file, so build manually inside a ROCm
     # image that has ROCM_HOME set up for Makefile.hip.
     container:
       image: rocm/dev-ubuntu-22.04:6.2@sha256:51e0238aaa3aa04c21e13a681194e66d44c653c1005c421b90fcd188d8369549
