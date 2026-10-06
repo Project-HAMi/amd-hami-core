@@ -5,7 +5,11 @@ updates:
     schedule:
       interval: "weekly"
 
+  # Dependabot reads only literal FROM lines, so the ROCm images CI pins
+  # live in .github/rocm/*.Dockerfile and the workflows read them from there.
   - package-ecosystem: "docker"
-    directory: "/"
+    directories:
+      - "/"
+      - "/.github/rocm"
     schedule:
       interval: "weekly"

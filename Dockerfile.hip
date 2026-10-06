@@ -23,7 +23,8 @@
 
 # ROCm images exist for Ubuntu 22.04 and 24.04; build on the older one to keep
 # the glibc baseline low (amd-device-plugin builds on rocm/dev-ubuntu-22.04:7.2.4).
-# Examples (unpinned tag is fine for local use; CI pins by digest, see ci.yml):
+# Examples (unpinned tag is fine for local use; CI passes the digest-pinned
+# image from .github/rocm/, which Dependabot keeps current):
 #   --build-arg ROCM_IMAGE=rocm/dev-ubuntu-22.04:6.2   (ROCm 6.2)
 #   --build-arg ROCM_IMAGE=rocm/dev-ubuntu-24.04:7.1   (ROCm 7.1)
 ARG ROCM_IMAGE=rocm/dev-ubuntu-22.04:6.2@sha256:51e0238aaa3aa04c21e13a681194e66d44c653c1005c421b90fcd188d8369549
