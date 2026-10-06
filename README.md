@@ -2,10 +2,14 @@
 
 LD_AUDIT library (`libamvgpu.so`) for AMD GPU slicing for HAMi project.
 Intercepts HIP API calls (`hipMalloc`, `hipFree`, `hipMemGetInfo`) to enforce
-a per-pod GPU memory limit. Compute unit masking is done by the HIP runtime
-itself via `ROC_GLOBAL_CU_MASK`, set by amd-device-plugin; this library only
-restores that variable for child processes that exec with a clean
-environment (see "Environment variable restoration" in `libamvgpu_audit.c`).
+a per-pod GPU memory limit. Compute unit masking is done by the ROCm runtime
+itself via `HSA_CU_MASK`, set by amd-device-plugin; this library serves that
+variable from the pod spec (`/proc/1/environ`), so a process cannot widen its
+slice by changing it before the runtime starts, and restores it for child
+processes that exec with a clean environment (see "Environment variable
+restoration" in `libamvgpu_audit.c`). A child exec'd without `LD_AUDIT`
+itself (for example `env -i`) runs without this library and outside the
+slice; only a CU limit in the kernel driver can close that.
 
 ## Build
 
@@ -56,7 +60,7 @@ LD_AUDIT=dist/libamvgpu.so HIP_DEVICE_MEMORY_LIMIT_0=1G ROC_GLOBAL_CU_MASK=0xFFF
 |----------|-------------|
 | `LD_AUDIT` | Path to `libamvgpu.so` |
 | `HIP_DEVICE_MEMORY_LIMIT_0` | Memory limit for device 0 (e.g. `4G`, `512m`) |
-| `ROC_GLOBAL_CU_MASK` | CU bitmask (set by HAMi scheduler; enforced by the HIP runtime, restored by this library for exec'd child processes) |
+| `HSA_CU_MASK` | Per-GPU CU slice (set by amd-device-plugin; enforced by the ROCm runtime, pinned to the pod spec value by this library) |
 | `LIBHIP_LOG_LEVEL` | Log level: 1=ERROR, 2=WARN (default), 3=INFO, 4=DEBUG |
 
 ## Test

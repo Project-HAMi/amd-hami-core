@@ -52,6 +52,7 @@
 #include "../include/hip_log_utils.h"
 #include "../multiprocess/hip_multiprocess_memory_limit.h"
 #include "alloc_tracker.h"
+#include "env_policy.h"
 
 /* HIP error codes (subset - we don't link against HIP) */
 typedef int hipError_t;
@@ -554,14 +555,15 @@ static void restore_container_env(void) {
  * getenv() interceptor for the DEFAULT namespace (installed via
  * la_symbind64, like the HIP function wrappers). Tries the real getenv
  * first; only for the small getenv_fallback_vars set, on a miss, falls
- * back to /proc/1/environ. This is the only way to hand the HIP/HSA
+ * back to /proc/1/environ. HSA_CU_MASK is served from /proc/1/environ
+ * even when the process set its own, see env_policy.h. This is the only way to hand the HIP/HSA
  * runtime a value this library learned outside its own environment;
  * setenv() cannot cross the link-map namespace boundary (see the block
  * comment above).
  */
 static char *wrap_getenv(const char *name) {
     char *val = real_getenv ? real_getenv(name) : NULL;
-    if (val || !name)
+    if (!name)
         return val;
 
     int tracked = 0;
@@ -571,14 +573,15 @@ static char *wrap_getenv(const char *name) {
             break;
         }
     }
-    if (!tracked)
-        return NULL;
+    if (!tracked || (val && !env_is_pinned(name)))
+        return val;
 
     load_proc1_environ();
-    if (proc1_environ_state != 1)
-        return NULL;
+    const char *pod_val = proc1_environ_state == 1
+        ? audit_search_proc_environ(proc1_environ_buf, proc1_environ_len, name)
+        : NULL;
     /* Cast away const: callers never write through a getenv() result. */
-    return (char *)audit_search_proc_environ(proc1_environ_buf, proc1_environ_len, name);
+    return (char *)env_resolve(name, val, pod_val, tracked);
 }
 
 /* ====================================================================
