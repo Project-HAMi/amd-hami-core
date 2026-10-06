@@ -125,7 +125,7 @@ static inline alloc_tracker_t *get_tracker(void) {
  * ==================================================================== */
 
 static void ensure_shrreg_init(void) {
-    /* Always call hip_shrreg_init() — it's lightweight when already
+    /* Always call hip_shrreg_init(): it's lightweight when already
      * initialized (pthread_once + flag check), and must be called
      * even after first init to trigger the env var retry mechanism
      * for multiprocess scenarios (vLLM/SGLang engine processes). */
@@ -422,9 +422,14 @@ static hipError_t wrap_hipExtMallocWithFlags(void **ptr, size_t size,
  * Environment variable restoration for child processes
  *
  * When inference servers (vLLM, SGLang) exec engine processes with a
- * clean environment, ROC_GLOBAL_CU_MASK and other HAMi env vars are
- * lost. The HIP runtime reads ROC_GLOBAL_CU_MASK via standard getenv(),
- * so HAMi's safe_getenv() (in the multiprocess module) cannot help.
+ * clean environment, HAMi env vars are lost. The HIP/HSA runtime reads
+ * them via standard getenv(), so HAMi's safe_getenv() (in the
+ * multiprocess module) cannot help. This includes the device isolation
+ * variables amd-device-plugin's Allocate() sets per pod:
+ * ROCR_VISIBLE_DEVICES and HIP_VISIBLE_DEVICES (which GPU this pod may
+ * see) and HSA_CU_MASK (the compute-unit slice), not just the memory
+ * limit. Losing any of them in a clean-exec child defeats this pod's
+ * isolation, not just its memory accounting.
  *
  * Fix: during LD_AUDIT initialization, read missing env vars from
  * /proc/1/environ (container PID 1 always has the full pod spec env)
@@ -432,6 +437,9 @@ static hipError_t wrap_hipExtMallocWithFlags(void **ptr, size_t size,
  * ==================================================================== */
 
 static const char *restore_env_vars[] = {
+    "ROCR_VISIBLE_DEVICES",
+    "HIP_VISIBLE_DEVICES",
+    "HSA_CU_MASK",
     "ROC_GLOBAL_CU_MASK",
     "HIP_DEVICE_MEMORY_LIMIT",
     "HIP_DEVICE_MEMORY_LIMIT_0",
