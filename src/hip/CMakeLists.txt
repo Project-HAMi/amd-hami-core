@@ -1,3 +1,8 @@
+# NOT USED BY THE AMD BUILD. hook.c and memory.c predate the switch to the
+# LD_AUDIT approach in libamvgpu_audit.c; CMakeLists.txt.hip (the real
+# AMD/HIP build entry point) never add_subdirectory()s this directory and
+# lists src/hip/libamvgpu_audit.c directly instead. Keeping this file only
+# as a record, same as src/multiprocess/CMakeLists.txt.
 set(HIP_SRC
     hook.c
     memory.c

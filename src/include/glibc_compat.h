@@ -1,5 +1,5 @@
 /*
- * glibc compatibility - ensure libamvgpu.so works on glibc 2.35+.
+ * glibc compatibility - ensure libamvgpu.so works on glibc 2.34+.
  *
  * _GNU_SOURCE implies _ISOC2X_SOURCE on glibc 2.38+, which causes
  * strtoull/strtol to redirect to __isoc23_* variants. This creates

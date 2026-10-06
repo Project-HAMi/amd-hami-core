@@ -14,7 +14,7 @@
  * limitations under the License.
  *
  * AMD GPU (HIP) memory virtualization library for HAMi.
- * Intercepts HIP memory allocation calls via LD_PRELOAD and enforces
+ * Intercepts HIP memory allocation calls via LD_AUDIT and enforces
  * per-device memory limits using shared memory IPC.
  */
 
@@ -42,9 +42,6 @@ typedef void *hipDeviceptr_t;
 typedef void *hipStream_t;
 typedef void *hipMemPool_t;
 
-/* Maximum number of GPU devices */
-#define HIP_DEVICE_MAX_COUNT 16
-
 /* Environment variable names - matching HAMi convention */
 #define HIP_DEVICE_MEMORY_LIMIT_ENV     "HIP_DEVICE_MEMORY_LIMIT"
 #define HIP_DEVICE_MEMORY_LIMIT_ENV_FMT "HIP_DEVICE_MEMORY_LIMIT_%d"
@@ -65,7 +62,7 @@ typedef struct {
     const char *name;
 } hip_entry_t;
 
-/* GCC visibility for LD_PRELOAD exported symbols */
+/* GCC visibility for LD_AUDIT exported symbols */
 #define FUNC_ATTR_VISIBLE __attribute__((visibility("default")))
 
 /* Resolve the real dlsym to avoid recursion through our dlsym hook.

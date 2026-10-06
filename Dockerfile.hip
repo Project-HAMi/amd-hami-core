@@ -39,10 +39,9 @@ COPY . /build/
 RUN make -f Makefile.hip clean all && \
     make -f Makefile.hip test
 
-# Verify: no GLIBC_2.38 dependency
-RUN ! objdump -T build-hip/libamvgpu.so | grep -q "GLIBC_2.38" && \
-    echo "OK: No GLIBC_2.38 dependency" || \
-    (echo "ERROR: GLIBC_2.38 dependency found!" && exit 1)
+# Verify: glibc 2.34 ABI baseline (see src/include/glibc_compat.h). Checks
+# every GLIBC_* symbol version, not just one hardcoded release.
+RUN test/check_glibc_abi.sh build-hip/libamvgpu.so
 
 # Verify: LD_AUDIT symbols exported
 RUN nm -D build-hip/libamvgpu.so | grep -q "T la_version" && \

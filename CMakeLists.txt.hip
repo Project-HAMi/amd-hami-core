@@ -6,12 +6,12 @@
 #
 # CMake build configuration for libamvgpu - AMD GPU memory virtualization.
 #
-# Build:
-#   mkdir build-hip && cd build-hip
-#   cmake -DROCM_HOME=/opt/rocm ../ -f CMakeLists.txt.hip
-#   make
+# cmake has no flag to pick a non-default CMakeLists.txt filename, so build
+# through Makefile.hip, which symlinks this file in as build-hip/CMakeLists.txt
+# before invoking cmake:
+#   make -f Makefile.hip ROCM_HOME=/opt/rocm
 #
-# Output: libamvgpu.so
+# Output: build-hip/libamvgpu.so
 #
 
 cmake_minimum_required(VERSION 3.10)
