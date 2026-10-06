@@ -1,3 +1,14 @@
+/*
+ * NOT BUILT ON AMD. This file is NVIDIA/CUDA code (cuda.h, nvml.h, SM/thread
+ * concepts that have no AMD equivalent) carried over unmodified from the
+ * NVIDIA HAMi-core this project was forked from. CMakeLists.txt.hip (the
+ * real AMD/HIP build) does not compile it, and src/multiprocess/CMakeLists.txt
+ * below is itself never included by CMakeLists.txt.hip (no add_subdirectory).
+ * Do not wire this into the HIP build without first adapting the utilization
+ * throttling logic to the AMD execution model (CUs/WGPs/SIMDs, not SMs).
+ * See https://github.com/Project-HAMi/amd-hami-core/issues/4.
+ */
+
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/time.h>
