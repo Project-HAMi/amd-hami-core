@@ -1,15 +1,18 @@
 # amd-hami-core
 
-LD_AUDIT library (`libamvgpu.so`) for AMD GPU slicing for HAMi project.
-Intercepts HIP API calls (`hipMalloc`, `hipFree`, `hipMemGetInfo`) to enforce
-a per-pod GPU memory limit. Compute unit masking is done by the ROCm runtime
-itself via `HSA_CU_MASK`, set by amd-device-plugin; this library serves that
-variable from the pod spec (`/proc/1/environ`), so a process cannot widen its
-slice by changing it before the runtime starts, and restores it for child
-processes that exec with a clean environment (see "Environment variable
-restoration" in `libamvgpu_audit.c`). A child exec'd without `LD_AUDIT`
-itself (for example `env -i`) runs without this library and outside the
-slice; only a CU limit in the kernel driver can close that.
+[![CI](https://github.com/Project-HAMi/amd-hami-core/actions/workflows/ci.yml/badge.svg)](https://github.com/Project-HAMi/amd-hami-core/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Project-HAMi/amd-hami-core/badge)](https://securityscorecards.dev/viewer/?uri=github.com/Project-HAMi/amd-hami-core)
+[![License](https://img.shields.io/github/license/Project-HAMi/amd-hami-core)](LICENSE)
+
+The `LD_AUDIT` library (`libamvgpu.so`) that [amd-device-plugin](https://github.com/Project-HAMi/amd-device-plugin) uses to enforce a per-pod AMD GPU memory limit, as part of [HAMi](https://github.com/Project-HAMi/HAMi)'s GPU sharing.
+
+## What it does
+
+- Intercepts HIP memory calls (`hipMalloc`, `hipFree`, `hipMemGetInfo`, and related allocators listed under [Limits](#limits)) to enforce a per-pod memory limit.
+- Does **not** do compute unit (CU) masking itself. That is enforced by the ROCm runtime via `HSA_CU_MASK`, which amd-device-plugin sets per pod.
+- Protects that `HSA_CU_MASK` value: it reads the mask amd-device-plugin set in the pod spec (from `/proc/1/environ`) and pins child processes to it, so a process cannot widen its own slice by changing the environment variable before the runtime starts. See "Environment variable restoration" in `libamvgpu_audit.c`.
+
+**Known gap:** a child process that re-execs itself without `LD_AUDIT` (for example via `env -i`) runs outside this library entirely, with no memory limit. Only a CU/memory limit enforced in the kernel driver itself can close that gap; this library cannot.
 
 ## Build
 
