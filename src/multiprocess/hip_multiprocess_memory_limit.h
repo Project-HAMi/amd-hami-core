@@ -19,13 +19,14 @@ extern "C" {
 #endif
 
 /* Shared region magic number for version detection */
-#define HIP_SHRREG_MAGIC 0x484D4931  /* "HMI1" */
+#define HIP_SHRREG_MAGIC 0x484D4932  /* "HMI2": HIP_MAX_DEVICES 64 */
 
 /* Maximum number of concurrent processes sharing GPUs */
 #define HIP_MAX_PROCS 1024
 
-/* Maximum GPU devices */
-#define HIP_MAX_DEVICES 16
+/* Maximum GPU devices per container. Device indexes at or above it have no
+ * limit, so it covers 8 GPUs split into 8 partitions each (MI300X CPX). */
+#define HIP_MAX_DEVICES 64
 
 /* Memory category types */
 #define MEM_TYPE_CONTEXT  0
@@ -96,6 +97,18 @@ uint64_t hip_get_device_memory_limit(int dev);
  * Must be called with the lock held.
  */
 uint64_t hip_get_device_memory_usage(int dev);
+
+/*
+ * Reserve size bytes on dev before allocating, so concurrent allocations
+ * cannot all pass the limit check and then all be recorded. Returns 0 when
+ * reserved (undo with hip_release_device_memory if the allocation fails),
+ * 1 when no limit applies and nothing was reserved, -1 when it would exceed
+ * the limit. Takes the lock itself.
+ */
+int hip_reserve_device_memory(int dev, uint64_t size);
+
+/* Return a reservation or a freed allocation. Takes the lock itself. */
+void hip_release_device_memory(int dev, uint64_t size);
 
 /*
  * Add memory usage for the current process on a specific device.
