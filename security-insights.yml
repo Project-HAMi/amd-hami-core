@@ -1,0 +1,105 @@
+header:
+  schema-version: 2.1.0
+  last-updated: '2026-10-06'
+  last-reviewed: '2026-10-06'
+  url: https://raw.githubusercontent.com/Project-HAMi/amd-hami-core/main/security-insights.yml
+  comment: |
+    amd-hami-core is one of the codebases that make up the HAMi project. It is
+    consumed as the amd-hami-core git submodule by Project-HAMi/amd-device-plugin,
+    which builds libamvgpu.so into its image, so the project section below
+    describes HAMi.
+
+project:
+  name: HAMi
+  homepage: https://project-hami.io
+  administrators:
+    - name: limengxuan
+      affiliation: Dynamia AI
+      social: https://github.com/archlitchi
+      primary: true
+  documentation:
+    quickstart-guide: https://project-hami.io/docs/installation/online-installation
+    detailed-guide: https://project-hami.io/docs
+    code-of-conduct: https://github.com/Project-HAMi/community/blob/main/CODE-OF-CONDUCT.md
+  repositories:
+    - name: amd-device-plugin
+      url: https://github.com/Project-HAMi/amd-device-plugin
+      comment: |
+        Kubernetes device plugin for AMD GPUs. Vendors amd-hami-core as a
+        submodule and builds libamvgpu.so into its image.
+    - name: amd-hami-core
+      url: https://github.com/Project-HAMi/amd-hami-core
+      comment: |
+        This repository. The libamvgpu.so LD_AUDIT interception layer that
+        enforces per-pod AMD GPU memory limits via the HIP runtime.
+  vulnerability-reporting:
+    reports-accepted: true
+    bug-bounty-available: false
+    security-policy: https://github.com/Project-HAMi/HAMi/security/policy
+    comment: |
+      Reports are accepted through the HAMi advisory form at
+      https://github.com/Project-HAMi/HAMi/security/advisories/new.
+
+      In scope: a workload reaching another tenant's GPU memory, device or
+      namespace.
+
+      Out of scope: a workload exceeding its own GPU memory quota by
+      unsetting LD_AUDIT, by linking the HIP runtime statically, or by
+      calling ptrace on its own process.
+
+      amd-hami-core is a cooperative quota mechanism on a trusted cluster,
+      not a hard isolation boundary. Out-of-scope cases are triaged as bugs.
+
+repository:
+  url: https://github.com/Project-HAMi/amd-hami-core
+  status: active
+  accepts-change-request: true
+  accepts-automated-change-request: true
+  core-team:
+    - name: Mesut Oezdil
+      social: https://github.com/moezdil
+      primary: true
+    - name: Kenji Shimizu
+      affiliation: Midokura
+      social: https://github.com/kenji-mido
+      primary: false
+  documentation:
+    contributing-guide: https://github.com/Project-HAMi/amd-hami-core/blob/main/CONTRIBUTING.md
+    governance: https://github.com/Project-HAMi/community/blob/main/governance.md
+    review-policy: https://github.com/Project-HAMi/amd-hami-core/blob/main/CONTRIBUTING.md
+    security-policy: https://github.com/Project-HAMi/amd-hami-core/blob/main/SECURITY.md
+  license:
+    url: https://github.com/Project-HAMi/amd-hami-core/blob/main/LICENSE
+    expression: Apache-2.0
+  release:
+    automated-pipeline: false
+    distribution-points:
+      - uri: https://github.com/Project-HAMi/amd-device-plugin/pkgs/container/amd-device-plugin
+        comment: |
+          libamvgpu.so is compiled from this repository and copied into the
+          amd-device-plugin image at /opt/hami/lib/amd/libamvgpu.so by the
+          Dockerfile in Project-HAMi/amd-device-plugin. amd-hami-core is not
+          published as a standalone artifact.
+      - uri: https://github.com/Project-HAMi/amd-hami-core
+        comment: |
+          Source is distributed only from this repository, over HTTPS.
+  security:
+    assessments:
+      self:
+        comment: |
+          No self assessment has been completed.
+    tools:
+      - name: GitHub secret scanning
+        type: secret-scanning
+        version: latest
+        rulesets:
+          - built-in
+        integration:
+          adhoc: false
+          ci: true
+          release: false
+        results: {}
+        comment: |
+          GitHub native secret scanning with push protection, enabled on
+          the repository to detect supported secret patterns and block
+          them from being pushed.
