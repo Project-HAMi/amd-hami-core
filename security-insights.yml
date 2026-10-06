@@ -103,3 +103,43 @@ repository:
           GitHub native secret scanning with push protection, enabled on
           the repository to detect supported secret patterns and block
           them from being pushed.
+      - name: CodeQL
+        type: SAST
+        version: latest
+        rulesets:
+          - built-in
+        integration:
+          adhoc: false
+          ci: true
+          release: false
+        results: {}
+        comment: |
+          Static analysis on pull requests via GitHub Actions
+          (.github/workflows/codeql-analysis.yml).
+      - name: OpenSSF Scorecard
+        type: SCA
+        version: latest
+        rulesets:
+          - built-in
+        integration:
+          adhoc: false
+          ci: true
+          release: false
+        results: {}
+        comment: |
+          Supply-chain posture scan on pushes to main
+          (.github/workflows/scorecard.yaml). Results published to
+          https://securityscorecards.dev/viewer/?uri=github.com/Project-HAMi/amd-hami-core.
+      - name: Dependabot
+        type: SCA
+        version: latest
+        rulesets:
+          - built-in
+        integration:
+          adhoc: false
+          ci: true
+          release: false
+        results: {}
+        comment: |
+          Automated update PRs for the github-actions and docker
+          ecosystems (.github/dependabot.yml).
