@@ -8,3 +8,4 @@ test/test_memory_size
 test/test_reserve
 test/test_shrreg
 test/test_init
+test/test_retry

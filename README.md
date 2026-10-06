@@ -73,7 +73,7 @@ The limit is enforced on `hipMalloc`, `hipMallocManaged`, `hipMallocAsync`, `hip
 ```bash
 # Unit tests (no GPU required)
 for t in test_alloc_tracker test_env_policy test_memory_size; do gcc -o /tmp/$t test/$t.c -I src/hip && /tmp/$t; done
-for t in test_reserve test_shrreg test_init; do gcc -O2 -pthread -o /tmp/$t test/$t.c src/multiprocess/hip_multiprocess_memory_limit.c && /tmp/$t; done
+for t in test_reserve test_shrreg test_init test_retry; do gcc -O2 -pthread -o /tmp/$t test/$t.c src/multiprocess/hip_multiprocess_memory_limit.c && /tmp/$t; done
 
 # On-GPU test (requires AMD GPU + ROCm)
 rm -f /tmp/hipdevshr.cache

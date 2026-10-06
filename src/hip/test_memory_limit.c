@@ -54,6 +54,8 @@ int main(void) {
     /* Query memory info (should be virtualized if limit is set) */
     size_t free_mem = 0, total_mem = 0;
     hipMemGetInfo(&free_mem, &total_mem);
+    /* With a limit, total is the limit; the 2 GB request must not fit it. */
+    size_t limited_total = total_mem;
     printf("\nMemory info:\n");
     printf("  Total: %zu MB\n", total_mem / (1024 * 1024));
     printf("  Free:  %zu MB\n", free_mem / (1024 * 1024));
@@ -81,8 +83,12 @@ int main(void) {
     if (err == hipErrorOutOfMemory) {
         printf("  -> OOM: memory limit is working correctly\n");
     } else if (err == hipSuccess) {
-        printf("  -> Allocated (limit > 2.5 GB or no limit set)\n");
         hipFree(ptr3);
+        if (limited_total < 2560ULL * 1024 * 1024) {
+            printf("  -> FAIL: 2 GB allocated past a %zu MB limit\n", limited_total / (1024 * 1024));
+            return 1;
+        }
+        printf("  -> Allocated (limit > 2.5 GB or no limit set)\n");
     } else {
         printf("  -> Unexpected error: %d\n", err);
     }

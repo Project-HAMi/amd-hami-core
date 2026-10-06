@@ -424,16 +424,19 @@ int hip_shrreg_init(void) {
     /* If shared region was created but limits were all zero (env not available
      * during early LD_AUDIT loading), retry reading limits now that the
      * environment should be available. */
-    if (g_shrreg != NULL && g_needs_limit_retry) {
-        const char *env_val = safe_getenv("HIP_DEVICE_MEMORY_LIMIT_0");
-        if (env_val != NULL) {
-            LOG_INFO("hip_shrreg_init: retrying read_memory_limits (env now available: %s)", env_val);
-            if (hip_shrreg_lock() == 0) {
+    if (g_shrreg != NULL && __atomic_load_n(&g_needs_limit_retry, __ATOMIC_ACQUIRE) &&
+        hip_shrreg_lock() == 0) {
+        /* safe_getenv reads /proc into one static buffer, and every
+         * allocating thread gets here, so it runs only under the lock. */
+        if (g_needs_limit_retry) {
+            const char *env_val = safe_getenv("HIP_DEVICE_MEMORY_LIMIT_0");
+            if (env_val != NULL) {
+                LOG_INFO("hip_shrreg_init: retrying read_memory_limits (env now available: %s)", env_val);
                 read_memory_limits(g_shrreg);
-                hip_shrreg_unlock();
+                __atomic_store_n(&g_needs_limit_retry, 0, __ATOMIC_RELEASE);
             }
-            g_needs_limit_retry = 0;
         }
+        hip_shrreg_unlock();
     }
 
     return (g_shrreg != NULL) ? 0 : -1;
