@@ -59,16 +59,20 @@ LD_AUDIT=dist/libamvgpu.so HIP_DEVICE_MEMORY_LIMIT_0=1G ROC_GLOBAL_CU_MASK=0xFFF
 | Variable | Description |
 |----------|-------------|
 | `LD_AUDIT` | Path to `libamvgpu.so` |
-| `HIP_DEVICE_MEMORY_LIMIT_0` | Memory limit for device 0 (e.g. `4G`, `512m`) |
+| `HIP_DEVICE_MEMORY_LIMIT_<i>` | Memory limit for device `i` (0-63): a whole number with an optional `K`, `M`, `G` or `T` suffix, e.g. `4G`, `4096m`. An invalid value is logged and means no limit. |
 | `HSA_CU_MASK` | Per-GPU CU slice (set by amd-device-plugin; enforced by the ROCm runtime, pinned to the pod spec value by this library) |
 | `LIBHIP_LOG_LEVEL` | Log level: 1=ERROR, 2=WARN (default), 3=INFO, 4=DEBUG |
+
+### Limits
+
+The limit is enforced on `hipMalloc`, `hipMallocManaged`, `hipMallocAsync`, `hipMallocPitch` and `hipExtMallocWithFlags`, and checked atomically across threads and processes. Allocations made through `hipMemCreate`/`hipMemMap`, `hipMallocFromPoolAsync`, `hipMalloc3D` or `hipMallocArray` are not intercepted yet; the dmem cgroup cap set by amd-device-plugin, where available, still covers them.
 
 ## Test
 
 ```bash
-# Unit test (no GPU required)
-docker run --rm libamvgpu-builder bash -c \
-  "gcc -o /tmp/test test/test_alloc_tracker.c -I src/hip -lpthread && /tmp/test"
+# Unit tests (no GPU required)
+for t in test_alloc_tracker test_env_policy test_memory_size; do gcc -o /tmp/$t test/$t.c -I src/hip && /tmp/$t; done
+for t in test_reserve test_shrreg; do gcc -O2 -pthread -o /tmp/$t test/$t.c src/multiprocess/hip_multiprocess_memory_limit.c && /tmp/$t; done
 
 # On-GPU test (requires AMD GPU + ROCm)
 rm -f /tmp/hipdevshr.cache

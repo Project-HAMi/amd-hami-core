@@ -20,7 +20,8 @@ rm -f /tmp/hipdevshr.cache
 LD_AUDIT=build-hip/libamvgpu.so HIP_DEVICE_MEMORY_LIMIT_0=1G LIBHIP_LOG_LEVEL=3 build-hip/test_memory_limit
 
 # Unit tests (no GPU required)
-gcc -o /tmp/test test/test_alloc_tracker.c -I src/hip -lpthread && /tmp/test
+for t in test_alloc_tracker test_env_policy test_memory_size; do gcc -o /tmp/$t test/$t.c -I src/hip && /tmp/$t; done
+for t in test_reserve test_shrreg; do gcc -O2 -pthread -o /tmp/$t test/$t.c src/multiprocess/hip_multiprocess_memory_limit.c && /tmp/$t; done
 
 # glibc ABI regression check (no GPU required)
 test/check_glibc_abi.sh build-hip/libamvgpu.so

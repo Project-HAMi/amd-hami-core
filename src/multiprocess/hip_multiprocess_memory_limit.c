@@ -33,6 +33,8 @@
 #include "hip_multiprocess_memory_limit.h"
 #include "../include/hip_log_utils.h"
 #include "../include/libamvgpu.h"
+#include "../include/memory_size.h"
+#include "../include/proc_file.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -58,43 +60,6 @@ static pthread_once_t g_init_once = PTHREAD_ONCE_INIT;
 
 /* Flag to track if cleanup was already called */
 static volatile int g_cleanup_done = 0;
-
-/*
- * Parse a memory size string with optional suffix.
- * Supports: G/g (GiB), M/m (MiB), K/k (KiB), or plain bytes.
- * Returns size in bytes, or 0 on parse error.
- */
-static uint64_t parse_memory_size(const char *str) {
-    char *end = NULL;
-    uint64_t val;
-
-    if (str == NULL || *str == '\0')
-        return 0;
-
-    val = strtoull(str, &end, 10);
-    if (end == str)
-        return 0;
-
-    switch (*end) {
-    case 'G': case 'g':
-        val *= 1024ULL * 1024 * 1024;
-        break;
-    case 'M': case 'm':
-        val *= 1024ULL * 1024;
-        break;
-    case 'K': case 'k':
-        val *= 1024ULL;
-        break;
-    case '\0': case '\n':
-        /* Already in bytes */
-        break;
-    default:
-        LOG_WARN("Unknown memory size suffix '%c' in '%s'", *end, str);
-        break;
-    }
-
-    return val;
-}
 
 /*
  * Read an environment variable, with /proc/self/environ fallback.
@@ -142,18 +107,14 @@ static const char *safe_getenv(const char *name) {
      * /proc/1/environ always reflects the container runtime's env vars
      * (set by containerd from the pod spec), so it's a reliable fallback.
      */
-    static char proc_env_buf[8192];
+    static char *proc_env_buf = NULL;
+    static size_t proc_env_cap = 0;
     static const char *proc_paths[] = {"/proc/self/environ", "/proc/1/environ", NULL};
 
     for (const char **pp = proc_paths; *pp; pp++) {
-        int fd = open(*pp, O_RDONLY);
-        if (fd < 0)
-            continue;
-        ssize_t n = read(fd, proc_env_buf, sizeof(proc_env_buf) - 1);
-        close(fd);
+        ssize_t n = read_proc_file(*pp, &proc_env_buf, &proc_env_cap);
         if (n <= 0)
             continue;
-        proc_env_buf[n] = '\0';
 
         val = search_proc_environ(proc_env_buf, n, name);
         if (val != NULL) {
@@ -180,6 +141,8 @@ static void read_memory_limits(hip_shared_region_t *region) {
              env_val ? env_val : "(null)");
     if (env_val != NULL) {
         global_limit = parse_memory_size(env_val);
+        if (global_limit == 0)
+            LOG_WARN("Ignoring invalid %s=%s", HIP_DEVICE_MEMORY_LIMIT_ENV, env_val);
     }
 
     for (int i = 0; i < HIP_MAX_DEVICES; i++) {
@@ -188,6 +151,8 @@ static void read_memory_limits(hip_shared_region_t *region) {
         env_val = safe_getenv(env_name);
         if (env_val != NULL) {
             region->limit[i] = parse_memory_size(env_val);
+            if (region->limit[i] == 0)
+                LOG_WARN("Ignoring invalid %s=%s", env_name, env_val);
             LOG_INFO("Device %d memory limit: %lu bytes (%s)",
                      i, region->limit[i], env_val);
         } else {
@@ -222,6 +187,10 @@ static int find_or_create_proc_slot(hip_shared_region_t *region) {
 
     for (int i = 0; i < HIP_MAX_PROCS; i++) {
         if (region->procs[i].pid == mypid) {
+            /* Called once per process, so a slot with our pid belongs to an
+             * earlier process that had the same pid (a restarted container
+             * reusing a persisted region); its usage is not ours. */
+            memset(region->procs[i].used, 0, sizeof(region->procs[i].used));
             return i;
         }
         if (free_slot < 0 && region->procs[i].pid == 0) {
@@ -252,7 +221,7 @@ static int find_or_create_proc_slot(hip_shared_region_t *region) {
 
     memset(&region->procs[free_slot], 0, sizeof(hip_shrreg_proc_slot_t));
     region->procs[free_slot].pid = mypid;
-    region->procs[free_slot].hostpid = mypid;
+    region->procs[free_slot].hostpid = mypid; /* pid in this pid namespace */
     region->procs[free_slot].status = 1;  /* Running */
     region->proc_num++;
 
@@ -479,7 +448,11 @@ int hip_shrreg_lock(void) {
 
         /* Deadlock detection: check if lock owner is still alive */
         size_t owner = g_shrreg->owner_pid;
-        if (owner > 0 && !is_process_alive((pid_t)owner)) {
+        /* Only the waiter that clears owner_pid posts: two waiters that both
+         * saw the dead owner would otherwise raise the semaphore to 2 and
+         * let two holders in for the rest of the region's life. */
+        if (owner > 0 && !is_process_alive((pid_t)owner) &&
+            __sync_bool_compare_and_swap(&g_shrreg->owner_pid, owner, 0)) {
             LOG_WARN("Lock owner pid %zu is dead, recovering semaphore",
                      owner);
             sem_post(&g_shrreg->sem);
@@ -563,6 +536,25 @@ int hip_oom_check(int dev, uint64_t addon) {
     }
 
     return 0;
+}
+
+int hip_reserve_device_memory(int dev, uint64_t size) {
+    if (hip_get_device_memory_limit(dev) == 0)
+        return 1;
+    if (hip_shrreg_lock() != 0)
+        return 1;  /* fail open: a stuck region must not stop every allocation */
+    int ret = hip_oom_check(dev, size);
+    if (ret == 0 && hip_add_device_memory_usage(dev, size, MEM_TYPE_DATA) != 0)
+        ret = 1;  /* not registered in a slot: nothing to account against */
+    hip_shrreg_unlock();
+    return ret;
+}
+
+void hip_release_device_memory(int dev, uint64_t size) {
+    if (hip_shrreg_lock() != 0)
+        return;
+    hip_rm_device_memory_usage(dev, size, MEM_TYPE_DATA);
+    hip_shrreg_unlock();
 }
 
 int hip_add_device_memory_usage(int dev, uint64_t size, int type) {

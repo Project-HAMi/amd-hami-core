@@ -35,7 +35,9 @@
  *   ACTIVE_OOM_KILLER             - Reclaim dead process memory on OOM ("true")
  */
 
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 
 #include "../include/glibc_compat.h"
 
@@ -53,6 +55,7 @@
 #include "../multiprocess/hip_multiprocess_memory_limit.h"
 #include "alloc_tracker.h"
 #include "env_policy.h"
+#include "../include/proc_file.h"
 
 /* HIP error codes (subset - we don't link against HIP) */
 typedef int hipError_t;
@@ -157,70 +160,88 @@ static void ensure_shrreg_init(void) {
  * Wrapper functions
  * ==================================================================== */
 
-static hipError_t wrap_hipMalloc(void **ptr, size_t size) {
-    if (!real_hipMalloc) return hipErrorNotInitialized;
-
-    ensure_shrreg_init();
-    int dev = current_device;
-
-    if (hip_get_device_memory_limit(dev) == 0)
-        return real_hipMalloc(ptr, size);
-
-    if (hip_shrreg_lock() != 0)
-        return real_hipMalloc(ptr, size);
-
-    if (hip_oom_check(dev, size) != 0) {
-        hip_shrreg_unlock();
-        LOG_WARN("hipMalloc: OOM rejected %zu bytes on device %d", size, dev);
+/*
+ * Finish an allocation reserved with hip_reserve_device_memory: track the
+ * pointer on success, return the reservation on failure. If the tracker is
+ * full the memory is freed again and reported as out of memory, because its
+ * free could never be accounted and the usage would leak for good.
+ */
+static hipError_t finish_alloc(hipError_t ret, int reserved, void **ptr,
+                               size_t size, int dev, const char *what) {
+    if (reserved != 0)
+        return ret;  /* no limit on dev: nothing reserved or tracked */
+    if (ret != hipSuccess) {
+        hip_release_device_memory(dev, size);
+        return ret;
+    }
+    tracker_lock();
+    int full = alloc_tracker_insert(get_tracker(), *ptr, size, dev);
+    tracker_unlock();
+    if (full != 0) {
+        LOG_ERROR("%s: allocation tracker full, refusing %zu bytes on device %d", what, size, dev);
+        if (real_hipFree)
+            real_hipFree(*ptr);
+        hip_release_device_memory(dev, size);
         return hipErrorOutOfMemory;
     }
+    LOG_DEBUG("%s: %zu bytes -> %p (dev %d)", what, size, *ptr, dev);
+    return hipSuccess;
+}
 
-    hip_shrreg_unlock();
+/* Reserve size on the current device, logging a rejection. */
+static int reserve(int dev, size_t size, const char *what) {
+    ensure_shrreg_init();
+    int reserved = hip_reserve_device_memory(dev, size);
+    if (reserved < 0)
+        LOG_WARN("%s: OOM rejected %zu bytes on device %d", what, size, dev);
+    return reserved;
+}
 
-    hipError_t ret = real_hipMalloc(ptr, size);
+/*
+ * Free ptr with free_fn and return its accounted size to the device it was
+ * allocated on (not the current one). The entry leaves the tracker before
+ * the free, so a concurrent allocation that reuses the address cannot have
+ * its own entry removed, and goes back in if the free fails.
+ */
+static hipError_t untracked_free(void *ptr, hipError_t (*free_fn)(void *, hipStream_t),
+                                 hipStream_t stream) {
+    int dev = 0;
+    tracker_lock();
+    size_t size = alloc_tracker_remove(get_tracker(), ptr, &dev);
+    tracker_unlock();
 
+    hipError_t ret = free_fn(ptr, stream);
+    if (size == 0)
+        return ret;
     if (ret == hipSuccess) {
-        if (hip_shrreg_lock() == 0) {
-            hip_add_device_memory_usage(dev, size, MEM_TYPE_DATA);
-            hip_shrreg_unlock();
-        }
+        hip_release_device_memory(dev, size);
+        LOG_DEBUG("free: %p released %zu bytes (dev %d)", ptr, size, dev);
+    } else {
         tracker_lock();
-        alloc_tracker_insert(get_tracker(), *ptr, size, dev);
+        alloc_tracker_insert(get_tracker(), ptr, size, dev);
         tracker_unlock();
-        LOG_DEBUG("hipMalloc: %zu bytes -> %p (dev %d)", size, *ptr, dev);
     }
-
     return ret;
+}
+
+static hipError_t sync_free(void *ptr, hipStream_t stream) {
+    (void)stream;
+    return real_hipFree(ptr);
+}
+
+static hipError_t wrap_hipMalloc(void **ptr, size_t size) {
+    if (!real_hipMalloc) return hipErrorNotInitialized;
+    int dev = current_device;
+    int reserved = reserve(dev, size, "hipMalloc");
+    if (reserved < 0)
+        return hipErrorOutOfMemory;
+    return finish_alloc(real_hipMalloc(ptr, size), reserved, ptr, size, dev, "hipMalloc");
 }
 
 static hipError_t wrap_hipFree(void *ptr) {
     if (!real_hipFree) return hipErrorNotInitialized;
     if (ptr == NULL) return real_hipFree(ptr);
-
-    int dev = current_device;
-
-    if (hip_get_device_memory_limit(dev) == 0)
-        return real_hipFree(ptr);
-
-    /* Look up exact allocation size from tracker */
-    int alloc_dev = dev;
-    tracker_lock();
-    size_t tracked_size = alloc_tracker_remove(get_tracker(), ptr, &alloc_dev);
-    tracker_unlock();
-
-    hipError_t ret = real_hipFree(ptr);
-
-    if (ret == hipSuccess && tracked_size > 0) {
-        if (hip_shrreg_lock() == 0) {
-            hip_rm_device_memory_usage(alloc_dev, tracked_size, MEM_TYPE_DATA);
-            hip_shrreg_unlock();
-        }
-        LOG_DEBUG("hipFree: %p freed %zu bytes (dev %d, tracked)", ptr, tracked_size, alloc_dev);
-    } else if (ret == hipSuccess && tracked_size == 0) {
-        LOG_WARN("hipFree: %p not found in tracker (dev %d)", ptr, dev);
-    }
-
-    return ret;
+    return untracked_free(ptr, sync_free, NULL);
 }
 
 static hipError_t wrap_hipMemGetInfo(size_t *free_mem, size_t *total_mem) {
@@ -231,18 +252,20 @@ static hipError_t wrap_hipMemGetInfo(size_t *free_mem, size_t *total_mem) {
     if (ret == hipSuccess) {
         ensure_shrreg_init();
         uint64_t limit = hip_get_device_memory_limit(current_device);
-        LOG_INFO("hipMemGetInfo called: dev=%d limit=%lu real_total=%zu",
-                 current_device, (unsigned long)limit, *total_mem);
         if (limit > 0) {
             uint64_t usage = 0;
             if (hip_shrreg_lock() == 0) {
                 usage = hip_get_device_memory_usage(current_device);
                 hip_shrreg_unlock();
             }
+            uint64_t left = (usage < limit) ? limit - usage : 0;
+            /* Never report more than the GPU really has free: other pods,
+             * and memory this library does not account, use it too. */
+            if (left < *free_mem)
+                *free_mem = (size_t)left;
             *total_mem = (size_t)limit;
-            *free_mem = (usage < limit) ? (size_t)(limit - usage) : 0;
-            LOG_INFO("hipMemGetInfo: free=%zu total=%zu (virtualized, dev=%d)",
-                     *free_mem, *total_mem, current_device);
+            LOG_DEBUG("hipMemGetInfo: free=%zu total=%zu (virtualized, dev=%d)",
+                      *free_mem, *total_mem, current_device);
         }
     }
 
@@ -263,175 +286,67 @@ static hipError_t wrap_hipSetDevice(int device) {
 static hipError_t wrap_hipMallocManaged(void **ptr, size_t size,
                                          unsigned int flags) {
     if (!real_hipMallocManaged) return hipErrorNotInitialized;
-
-    ensure_shrreg_init();
     int dev = current_device;
-
-    if (hip_get_device_memory_limit(dev) == 0)
-        return real_hipMallocManaged(ptr, size, flags);
-
-    if (hip_shrreg_lock() != 0)
-        return real_hipMallocManaged(ptr, size, flags);
-
-    if (hip_oom_check(dev, size) != 0) {
-        hip_shrreg_unlock();
+    int reserved = reserve(dev, size, "hipMallocManaged");
+    if (reserved < 0)
         return hipErrorOutOfMemory;
-    }
-
-    hip_shrreg_unlock();
-
-    hipError_t ret = real_hipMallocManaged(ptr, size, flags);
-
-    if (ret == hipSuccess) {
-        if (hip_shrreg_lock() == 0) {
-            hip_add_device_memory_usage(dev, size, MEM_TYPE_DATA);
-            hip_shrreg_unlock();
-        }
-        tracker_lock();
-        alloc_tracker_insert(get_tracker(), *ptr, size, dev);
-        tracker_unlock();
-        LOG_DEBUG("hipMallocManaged: %zu bytes -> %p (dev %d)", size, *ptr, dev);
-    }
-
-    return ret;
+    return finish_alloc(real_hipMallocManaged(ptr, size, flags), reserved, ptr, size, dev, "hipMallocManaged");
 }
 
 static hipError_t wrap_hipMallocAsync(void **ptr, size_t size,
                                        hipStream_t stream) {
     if (!real_hipMallocAsync) return hipErrorNotInitialized;
-
-    ensure_shrreg_init();
     int dev = current_device;
-
-    if (hip_get_device_memory_limit(dev) == 0)
-        return real_hipMallocAsync(ptr, size, stream);
-
-    if (hip_shrreg_lock() != 0)
-        return real_hipMallocAsync(ptr, size, stream);
-
-    if (hip_oom_check(dev, size) != 0) {
-        hip_shrreg_unlock();
+    int reserved = reserve(dev, size, "hipMallocAsync");
+    if (reserved < 0)
         return hipErrorOutOfMemory;
-    }
-
-    hip_shrreg_unlock();
-
-    hipError_t ret = real_hipMallocAsync(ptr, size, stream);
-
-    if (ret == hipSuccess) {
-        if (hip_shrreg_lock() == 0) {
-            hip_add_device_memory_usage(dev, size, MEM_TYPE_DATA);
-            hip_shrreg_unlock();
-        }
-        tracker_lock();
-        alloc_tracker_insert(get_tracker(), *ptr, size, dev);
-        tracker_unlock();
-        LOG_DEBUG("hipMallocAsync: %zu bytes (dev %d)", size, dev);
-    }
-
-    return ret;
+    return finish_alloc(real_hipMallocAsync(ptr, size, stream), reserved, ptr, size, dev, "hipMallocAsync");
 }
 
 static hipError_t wrap_hipFreeAsync(void *ptr, hipStream_t stream) {
     if (!real_hipFreeAsync) return hipErrorNotInitialized;
     if (ptr == NULL) return real_hipFreeAsync(ptr, stream);
-
-    int dev = current_device;
-    if (hip_get_device_memory_limit(dev) == 0)
-        return real_hipFreeAsync(ptr, stream);
-
-    /* Look up size before async free */
-    int alloc_dev = dev;
-    tracker_lock();
-    size_t tracked_size = alloc_tracker_remove(get_tracker(), ptr, &alloc_dev);
-    tracker_unlock();
-
-    hipError_t ret = real_hipFreeAsync(ptr, stream);
-
-    if (ret == hipSuccess && tracked_size > 0) {
-        if (hip_shrreg_lock() == 0) {
-            hip_rm_device_memory_usage(alloc_dev, tracked_size, MEM_TYPE_DATA);
-            hip_shrreg_unlock();
-        }
-        LOG_DEBUG("hipFreeAsync: %p freed %zu bytes (dev %d, tracked)", ptr, tracked_size, alloc_dev);
-    }
-
-    return ret;
+    return untracked_free(ptr, real_hipFreeAsync, stream);
 }
 
 static hipError_t wrap_hipMallocPitch(void **ptr, size_t *pitch,
                                        size_t width, size_t height) {
     if (!real_hipMallocPitch) return hipErrorNotInitialized;
-
-    ensure_shrreg_init();
     int dev = current_device;
 
-    if (hip_get_device_memory_limit(dev) == 0)
-        return real_hipMallocPitch(ptr, pitch, width, height);
-
-    size_t estimated = width * height;
-
-    if (hip_shrreg_lock() != 0)
-        return real_hipMallocPitch(ptr, pitch, width, height);
-
-    if (hip_oom_check(dev, estimated) != 0) {
-        hip_shrreg_unlock();
+    size_t estimated;
+    if (__builtin_mul_overflow(width, height, &estimated))
         return hipErrorOutOfMemory;
-    }
-
-    hip_shrreg_unlock();
+    int reserved = reserve(dev, estimated, "hipMallocPitch");
+    if (reserved < 0)
+        return hipErrorOutOfMemory;
 
     hipError_t ret = real_hipMallocPitch(ptr, pitch, width, height);
-
-    if (ret == hipSuccess && pitch != NULL) {
-        size_t actual = (*pitch) * height;
-        if (hip_shrreg_lock() == 0) {
-            hip_add_device_memory_usage(dev, actual, MEM_TYPE_DATA);
-            hip_shrreg_unlock();
+    size_t actual = estimated;
+    if (reserved == 0 && ret == hipSuccess && pitch != NULL &&
+        !__builtin_mul_overflow(*pitch, height, &actual) && actual > estimated) {
+        /* The row padding is real memory too; it has to fit the limit. */
+        if (hip_reserve_device_memory(dev, actual - estimated) < 0) {
+            LOG_WARN("hipMallocPitch: OOM rejected %zu padded bytes on device %d", actual, dev);
+            if (real_hipFree)
+                real_hipFree(*ptr);
+            hip_release_device_memory(dev, estimated);
+            return hipErrorOutOfMemory;
         }
-        tracker_lock();
-        alloc_tracker_insert(get_tracker(), *ptr, actual, dev);
-        tracker_unlock();
-        LOG_DEBUG("hipMallocPitch: %zux%zu (pitch=%zu, total=%zu) dev %d",
-                  width, height, *pitch, actual, dev);
+    } else {
+        actual = estimated;
     }
-
-    return ret;
+    return finish_alloc(ret, reserved, ptr, actual, dev, "hipMallocPitch");
 }
 
 static hipError_t wrap_hipExtMallocWithFlags(void **ptr, size_t size,
                                               unsigned int flags) {
     if (!real_hipExtMallocWithFlags) return hipErrorNotInitialized;
-
-    ensure_shrreg_init();
     int dev = current_device;
-
-    if (hip_get_device_memory_limit(dev) == 0)
-        return real_hipExtMallocWithFlags(ptr, size, flags);
-
-    if (hip_shrreg_lock() != 0)
-        return real_hipExtMallocWithFlags(ptr, size, flags);
-
-    if (hip_oom_check(dev, size) != 0) {
-        hip_shrreg_unlock();
+    int reserved = reserve(dev, size, "hipExtMallocWithFlags");
+    if (reserved < 0)
         return hipErrorOutOfMemory;
-    }
-
-    hip_shrreg_unlock();
-
-    hipError_t ret = real_hipExtMallocWithFlags(ptr, size, flags);
-
-    if (ret == hipSuccess) {
-        if (hip_shrreg_lock() == 0) {
-            hip_add_device_memory_usage(dev, size, MEM_TYPE_DATA);
-            hip_shrreg_unlock();
-        }
-        tracker_lock();
-        alloc_tracker_insert(get_tracker(), *ptr, size, dev);
-        tracker_unlock();
-    }
-
-    return ret;
+    return finish_alloc(real_hipExtMallocWithFlags(ptr, size, flags), reserved, ptr, size, dev, "hipExtMallocWithFlags");
 }
 
 /* ====================================================================
@@ -484,29 +399,27 @@ static const char *getenv_fallback_vars[] = {
     NULL
 };
 
-static char proc1_environ_buf[16384];
+static char *proc1_environ_buf = NULL;
 static size_t proc1_environ_len = 0;
-static int proc1_environ_state = 0; /* 0=not loaded, 1=ok, -1=failed */
+/* 0=not loaded, 2=loading, 1=ok, -1=failed */
+static volatile int proc1_environ_state = 0;
 
 /* Load /proc/1/environ once (container PID 1 always has the full pod
- * spec env); cheap to call repeatedly after the first time. */
+ * spec env); cheap to call repeatedly after the first time. getenv() runs
+ * on any thread, so one loader wins an atomic flag and the rest wait for it
+ * (no pthread calls: their PLT resolution re-enters la_symbind64). */
 static void load_proc1_environ(void) {
-    if (proc1_environ_state != 0)
-        return;
-    int fd = open("/proc/1/environ", O_RDONLY);
-    if (fd < 0) {
-        proc1_environ_state = -1;
-        return;
-    }
-    ssize_t n = read(fd, proc1_environ_buf, sizeof(proc1_environ_buf) - 1);
-    close(fd);
-    if (n <= 0) {
-        proc1_environ_state = -1;
+    if (__sync_bool_compare_and_swap(&proc1_environ_state, 0, 2)) {
+        size_t cap = 0;
+        ssize_t n = read_proc_file("/proc/1/environ", &proc1_environ_buf, &cap);
+        if (n > 0)
+            proc1_environ_len = (size_t)n;
+        __sync_synchronize();
+        proc1_environ_state = (n > 0) ? 1 : -1;
         return;
     }
-    proc1_environ_buf[n] = '\0';
-    proc1_environ_len = (size_t)n;
-    proc1_environ_state = 1;
+    while (proc1_environ_state == 2)
+        ;
 }
 
 /*

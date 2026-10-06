@@ -12,8 +12,9 @@
  * Uses open addressing with linear probing and tombstone markers
  * for deletion to maintain probe chain integrity.
  *
- * Thread safety: All access must be externally synchronized (e.g.,
- * the caller holds a pthread_mutex).
+ * Thread safety: All access must be externally synchronized; libamvgpu
+ * uses an atomic spinlock (tracker_lock) because pthread calls would
+ * re-enter la_symbind64.
  */
 
 #ifndef ALLOC_TRACKER_H
