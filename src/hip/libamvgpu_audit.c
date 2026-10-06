@@ -74,6 +74,7 @@ static hipError_t (*real_hipMallocAsync)(void **, size_t, hipStream_t) = NULL;
 static hipError_t (*real_hipFreeAsync)(void *, hipStream_t) = NULL;
 static hipError_t (*real_hipMallocPitch)(void **, size_t *, size_t, size_t) = NULL;
 static hipError_t (*real_hipExtMallocWithFlags)(void **, size_t, unsigned int) = NULL;
+static char *(*real_getenv)(const char *) = NULL;
 
 /* Current device per-thread */
 static __thread int current_device = 0;
@@ -124,7 +125,21 @@ static inline alloc_tracker_t *get_tracker(void) {
  * resolving symbols at that point. Defer to first memory operation.
  * ==================================================================== */
 
+static void restore_container_env(void);
+
 static void ensure_shrreg_init(void) {
+    /* restore_container_env() must NOT run from la_version(): at that
+     * point the dynamic linker is still loading the main executable, and
+     * __libc_start_main has not yet pointed glibc's "environ" at this
+     * process's real envp. Any setenv() done before that assignment is
+     * silently discarded once it runs. Deferring to the first real HIP
+     * call (guaranteed to be after the host program's own main() has
+     * started, so "environ" is already the live one) was verified fixed
+     * on real hardware; calling it from la_version() logged "restored"
+     * but the child never actually saw the variable. */
+    if (!g_shrreg_ready) {
+        restore_container_env();
+    }
     /* Always call hip_shrreg_init(): it's lightweight when already
      * initialized (pthread_once + flag check), and must be called
      * even after first init to trigger the env var retry mechanism
@@ -422,25 +437,33 @@ static hipError_t wrap_hipExtMallocWithFlags(void **ptr, size_t size,
  * Environment variable restoration for child processes
  *
  * When inference servers (vLLM, SGLang) exec engine processes with a
- * clean environment, HAMi env vars are lost. The HIP/HSA runtime reads
- * them via standard getenv(), so HAMi's safe_getenv() (in the
- * multiprocess module) cannot help. This includes the device isolation
- * variables amd-device-plugin's Allocate() sets per pod:
- * ROCR_VISIBLE_DEVICES and HIP_VISIBLE_DEVICES (which GPU this pod may
- * see) and HSA_CU_MASK (the compute-unit slice), not just the memory
- * limit. Losing any of them in a clean-exec child defeats this pod's
- * isolation, not just its memory accounting.
+ * clean environment, HAMi env vars are lost.
  *
- * Fix: during LD_AUDIT initialization, read missing env vars from
- * /proc/1/environ (container PID 1 always has the full pod spec env)
- * and restore them via setenv(), making them visible to all libraries.
+ * This library's own code (hip_multiprocess_memory_limit.c's
+ * safe_getenv) and the code below both restore from /proc/.../environ,
+ * but they fix two DIFFERENT problems and must stay separate:
+ *
+ *   - internal_restore_vars: read by THIS library's own code, in its
+ *     own LD_AUDIT link-map namespace. setenv() here is visible to
+ *     that same code's later getenv() calls, so restoring them once
+ *     (via setenv) is correct and sufficient.
+ *
+ *   - getenv_fallback_vars: read by the HIP/HSA runtime itself
+ *     (libamdhip64.so, loaded normally, in the DEFAULT namespace) via
+ *     standard getenv(). LD_AUDIT loads this library into a SEPARATE
+ *     link-map namespace with its OWN private glibc "environ": verified
+ *     on real hardware that setenv() here and getenv() in the default
+ *     namespace see two different "environ" pointers in the same
+ *     process. A setenv() in this file can never make the HIP runtime's
+ *     getenv() see the value, no matter how early or late it runs.
+ *     These must instead be served by intercepting getenv() itself
+ *     through la_symbind64 (see wrap_getenv), the same technique this
+ *     file already uses for hipMalloc and friends: it works across
+ *     namespaces because la_symbind64 rewrites the DEFAULT namespace's
+ *     own PLT entry, not this namespace's environment.
  * ==================================================================== */
 
-static const char *restore_env_vars[] = {
-    "ROCR_VISIBLE_DEVICES",
-    "HIP_VISIBLE_DEVICES",
-    "HSA_CU_MASK",
-    "ROC_GLOBAL_CU_MASK",
+static const char *internal_restore_vars[] = {
     "HIP_DEVICE_MEMORY_LIMIT",
     "HIP_DEVICE_MEMORY_LIMIT_0",
     "HIP_DEVICE_MEMORY_LIMIT_1",
@@ -452,9 +475,42 @@ static const char *restore_env_vars[] = {
     NULL
 };
 
+static const char *getenv_fallback_vars[] = {
+    "ROCR_VISIBLE_DEVICES",
+    "HIP_VISIBLE_DEVICES",
+    "HSA_CU_MASK",
+    "ROC_GLOBAL_CU_MASK",
+    NULL
+};
+
+static char proc1_environ_buf[16384];
+static size_t proc1_environ_len = 0;
+static int proc1_environ_state = 0; /* 0=not loaded, 1=ok, -1=failed */
+
+/* Load /proc/1/environ once (container PID 1 always has the full pod
+ * spec env); cheap to call repeatedly after the first time. */
+static void load_proc1_environ(void) {
+    if (proc1_environ_state != 0)
+        return;
+    int fd = open("/proc/1/environ", O_RDONLY);
+    if (fd < 0) {
+        proc1_environ_state = -1;
+        return;
+    }
+    ssize_t n = read(fd, proc1_environ_buf, sizeof(proc1_environ_buf) - 1);
+    close(fd);
+    if (n <= 0) {
+        proc1_environ_state = -1;
+        return;
+    }
+    proc1_environ_buf[n] = '\0';
+    proc1_environ_len = (size_t)n;
+    proc1_environ_state = 1;
+}
+
 /*
- * Search null-separated environ buffer for NAME=VALUE.
- * Returns pointer to VALUE (within buf) or NULL.
+ * Search a null-separated environ buffer for NAME=VALUE.
+ * Returns a pointer to VALUE (within buf) or NULL.
  */
 static const char *audit_search_proc_environ(const char *buf, size_t len,
                                               const char *name) {
@@ -470,26 +526,20 @@ static const char *audit_search_proc_environ(const char *buf, size_t len,
 }
 
 /*
- * Restore missing env vars from /proc/1/environ into the process
- * environment. Only sets variables that are absent from getenv().
+ * Restore internal_restore_vars missing from THIS process's own
+ * environment, via /proc/1/environ. Only correct for vars consumed by
+ * this library's own code; see the block comment above.
  */
 static void restore_container_env(void) {
-    int fd = open("/proc/1/environ", O_RDONLY);
-    if (fd < 0)
+    load_proc1_environ();
+    if (proc1_environ_state != 1)
         return;
-
-    static char env_buf[16384];
-    ssize_t n = read(fd, env_buf, sizeof(env_buf) - 1);
-    close(fd);
-    if (n <= 0)
-        return;
-    env_buf[n] = '\0';
 
     int restored = 0;
-    for (const char **vp = restore_env_vars; *vp; vp++) {
+    for (const char **vp = internal_restore_vars; *vp; vp++) {
         if (getenv(*vp) != NULL)
             continue;  /* already present */
-        const char *val = audit_search_proc_environ(env_buf, (size_t)n, *vp);
+        const char *val = audit_search_proc_environ(proc1_environ_buf, proc1_environ_len, *vp);
         if (val) {
             setenv(*vp, val, 0);
             LOG_INFO("restore_container_env: %s restored from /proc/1/environ", *vp);
@@ -500,6 +550,37 @@ static void restore_container_env(void) {
         LOG_INFO("restore_container_env: restored %d env vars (pid %d)", restored, getpid());
 }
 
+/*
+ * getenv() interceptor for the DEFAULT namespace (installed via
+ * la_symbind64, like the HIP function wrappers). Tries the real getenv
+ * first; only for the small getenv_fallback_vars set, on a miss, falls
+ * back to /proc/1/environ. This is the only way to hand the HIP/HSA
+ * runtime a value this library learned outside its own environment;
+ * setenv() cannot cross the link-map namespace boundary (see the block
+ * comment above).
+ */
+static char *wrap_getenv(const char *name) {
+    char *val = real_getenv ? real_getenv(name) : NULL;
+    if (val || !name)
+        return val;
+
+    int tracked = 0;
+    for (const char **vp = getenv_fallback_vars; *vp; vp++) {
+        if (strcmp(*vp, name) == 0) {
+            tracked = 1;
+            break;
+        }
+    }
+    if (!tracked)
+        return NULL;
+
+    load_proc1_environ();
+    if (proc1_environ_state != 1)
+        return NULL;
+    /* Cast away const: callers never write through a getenv() result. */
+    return (char *)audit_search_proc_environ(proc1_environ_buf, proc1_environ_len, name);
+}
+
 /* ====================================================================
  * LD_AUDIT interface
  * ==================================================================== */
@@ -507,7 +588,6 @@ static void restore_container_env(void) {
 __attribute__((visibility("default")))
 unsigned int la_version(unsigned int version) {
     LOG_INFO("libamvgpu LD_AUDIT loaded (pid %d, LAV %u)", getpid(), version);
-    restore_container_env();
     return LAV_CURRENT;
 }
 
@@ -589,6 +669,10 @@ uintptr_t la_symbind32(Elf32_Sym *sym, unsigned int ndx,
     INTERCEPT(hipFreeAsync,          real_hipFreeAsync,          wrap_hipFreeAsync)
     INTERCEPT(hipMallocPitch,        real_hipMallocPitch,        wrap_hipMallocPitch)
     INTERCEPT(hipExtMallocWithFlags, real_hipExtMallocWithFlags, wrap_hipExtMallocWithFlags)
+    /* getenv must stay unconditional (INTERCEPT_ALWAYS), including for
+     * from_hip callers: the HIP runtime reading ROC_GLOBAL_CU_MASK IS
+     * the from_hip caller this fallback exists for. */
+    INTERCEPT_ALWAYS(getenv,         real_getenv,                wrap_getenv)
 
     #undef INTERCEPT_ALWAYS
     #undef INTERCEPT
