@@ -16,6 +16,21 @@ concurrency:
 permissions: read-all
 
 jobs:
+  # a job container image cannot come from a file, so read it in a job first
+  image:
+    name: Read the pinned ROCm image
+    runs-on: ubuntu-latest
+    if: github.repository == 'Project-HAMi/amd-hami-core'
+    outputs:
+      rocm: ${{ steps.rocm.outputs.image }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - id: rocm
+        run: echo "image=$(sed -n 's/^FROM //p' .github/rocm/rocm-6.2.Dockerfile)" >> "$GITHUB_OUTPUT"
+
   analyze:
     name: Analyze (cpp)
     runs-on: ubuntu-latest
@@ -24,12 +39,12 @@ jobs:
       packages: read
       actions: read
       contents: read
-    if: github.repository == 'Project-HAMi/amd-hami-core'
+    needs: image
     # CodeQL's autobuild does not know about Makefile.hip, which links
     # CMakeLists.txt.hip in as the build file, so build manually inside a ROCm
     # image that has ROCM_HOME set up for Makefile.hip.
     container:
-      image: rocm/dev-ubuntu-22.04:6.2@sha256:51e0238aaa3aa04c21e13a681194e66d44c653c1005c421b90fcd188d8369549
+      image: ${{ needs.image.outputs.rocm }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
