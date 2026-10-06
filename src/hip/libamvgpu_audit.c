@@ -534,7 +534,10 @@ unsigned int la_objopen(struct link_map *map, Lmid_t lmid,
  *      to avoid breaking HIP internal initialization
  *   3. If the caller is external (PyTorch, user app, etc.), redirect to wrapper
  *
- * If no memory limit is configured (all limits == 0), skip all interception.
+ * This function always intercepts once loaded; it does not itself check
+ * whether a memory limit is configured. A whole-GPU pod skips interception
+ * one level up instead: amd-device-plugin does not set LD_AUDIT for it, so
+ * this library, and la_symbind64, never run in that process at all.
  */
 #if __ELF_NATIVE_CLASS == 64
 __attribute__((visibility("default")))

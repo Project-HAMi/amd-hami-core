@@ -27,7 +27,13 @@ static inline int get_log_level(void) {
     static int level = -1;
     if (level < 0) {
         const char *env = getenv("LIBHIP_LOG_LEVEL");
-        level = env ? atoi(env) : LOG_LEVEL_WARN;
+        int parsed = env ? atoi(env) : LOG_LEVEL_WARN;
+        /* atoi() returns 0 for a missing/non-numeric value too, which would
+         * otherwise suppress logging entirely, including the errors that
+         * would explain why. Anything outside the documented 1-4 range
+         * falls back to the default instead. */
+        level = (parsed >= LOG_LEVEL_ERROR && parsed <= LOG_LEVEL_DEBUG)
+                    ? parsed : LOG_LEVEL_WARN;
     }
     return level;
 }

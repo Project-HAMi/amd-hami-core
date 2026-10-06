@@ -6,11 +6,11 @@
  *
  * Test program for AMD GPU memory limiting via libamvgpu.
  *
- * Build (standalone, without LD_PRELOAD):
+ * Build (standalone, without LD_AUDIT):
  *   hipcc test_memory_limit.c -o test_memory_limit -ldl
  *
  * Run with memory limit:
- *   LD_PRELOAD=./libamvgpu.so \
+ *   LD_AUDIT=./libamvgpu.so \
  *   HIP_DEVICE_MEMORY_LIMIT_0=1G \
  *   LIBHIP_LOG_LEVEL=3 \
  *   ./test_memory_limit

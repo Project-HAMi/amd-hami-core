@@ -12,9 +12,6 @@
 
 #include "libamvgpu.h"
 
-/* Number of HIP functions in the entry table */
-#define HIP_ENTRY_COUNT 32
-
 /* Initialize the HIP library entry table with real function pointers */
 int hip_hook_init(void);
 

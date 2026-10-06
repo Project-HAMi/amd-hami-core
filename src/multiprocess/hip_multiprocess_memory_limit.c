@@ -55,8 +55,13 @@ static hip_shared_region_t *g_shrreg = NULL;
 /* Current process slot index (-1 = not registered) */
 static int g_proc_slot = -1;
 
-/* Initialization guard */
-static pthread_once_t g_init_once = PTHREAD_ONCE_INIT;
+/* Initialization guard: 0=not started, 2=in progress, 1=ready. A plain
+ * atomic flag, not pthread_once: la_objopen flags every object
+ * BINDTO|BINDFROM, so this library's own first pthread_* call can re-enter
+ * la_symbind64 during lazy PLT resolution while the dynamic linker holds
+ * its load lock, same reentrancy hazard libamvgpu_audit.c's tracker_lock()
+ * avoids by using a spinlock instead of pthread_mutex. */
+static volatile int g_shrreg_init_state = 0;
 
 /* Flag to track if cleanup was already called */
 static volatile int g_cleanup_done = 0;
@@ -383,7 +388,7 @@ static void do_shrreg_init(void) {
 static void child_reinit(void) {
     LOG_INFO("child_reinit: pid %d, g_shrreg=%p, slot=%d",
              getpid(), (void *)g_shrreg, g_proc_slot);
-    g_init_once = PTHREAD_ONCE_INIT;
+    g_shrreg_init_state = 0;
     g_proc_slot = -1;
     g_cleanup_done = 0;
 
@@ -404,7 +409,14 @@ static void register_fork_handler(void) {
 }
 
 int hip_shrreg_init(void) {
-    pthread_once(&g_init_once, do_shrreg_init);
+    if (__sync_bool_compare_and_swap(&g_shrreg_init_state, 0, 2)) {
+        do_shrreg_init();
+        __sync_synchronize();
+        g_shrreg_init_state = 1;
+    } else {
+        while (g_shrreg_init_state == 2)
+            ;
+    }
 
     /* If shared region was created but limits were all zero (env not available
      * during early LD_AUDIT loading), retry reading limits now that the
