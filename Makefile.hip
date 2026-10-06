@@ -15,7 +15,7 @@
 ROCM_HOME ?= /opt/rocm
 BUILD_DIR ?= build-hip
 BUILD_TYPE ?= Release
-# CMakeLists.txt.hip is the AMD/HIP version (CMakeLists.txt is NVIDIA/CUDA)
+# cmake has no flag for another file name, so the build dir links this in
 CMAKE_FILE ?= CMakeLists.txt.hip
 
 .PHONY: all test clean install
@@ -37,7 +37,6 @@ all:
 	@echo "Usage:"
 	@echo "  LD_AUDIT=$(BUILD_DIR)/libamvgpu.so \\"
 	@echo "  HIP_DEVICE_MEMORY_LIMIT_0=48G \\"
-	@echo "  ROC_GLOBAL_CU_MASK=0xFFFFFFFFFFFFFFFFFFF \\"
 	@echo "  ./your_app"
 
 test: all

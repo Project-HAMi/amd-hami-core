@@ -409,16 +409,18 @@ static volatile int proc1_environ_state = 0;
  * on any thread, so one loader wins an atomic flag and the rest wait for it
  * (no pthread calls: their PLT resolution re-enters la_symbind64). */
 static void load_proc1_environ(void) {
-    if (__sync_bool_compare_and_swap(&proc1_environ_state, 0, 2)) {
+    int expected = 0;
+    if (__atomic_compare_exchange_n(&proc1_environ_state, &expected, 2, 0,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
         size_t cap = 0;
         ssize_t n = read_proc_file("/proc/1/environ", &proc1_environ_buf, &cap);
         if (n > 0)
             proc1_environ_len = (size_t)n;
-        __sync_synchronize();
-        proc1_environ_state = (n > 0) ? 1 : -1;
+        /* release publishes the buffer to readers that acquire the state */
+        __atomic_store_n(&proc1_environ_state, (n > 0) ? 1 : -1, __ATOMIC_RELEASE);
         return;
     }
-    while (proc1_environ_state == 2)
+    while (__atomic_load_n(&proc1_environ_state, __ATOMIC_ACQUIRE) == 2)
         ;
 }
 

@@ -21,96 +21,14 @@
 #ifndef LIBAMVGPU_H
 #define LIBAMVGPU_H
 
-#include <dlfcn.h>
-#include <stdint.h>
-#include <stdlib.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-/* HIP error codes (subset) */
-typedef enum {
-    hipSuccess = 0,
-    hipErrorOutOfMemory = 2,
-    hipErrorNotInitialized = 3,
-    hipErrorInvalidValue = 11,
-    hipErrorInvalidDevice = 101,
-} hipError_t;
-
-typedef void *hipDeviceptr_t;
-typedef void *hipStream_t;
-typedef void *hipMemPool_t;
-
 /* Environment variable names - matching HAMi convention */
 #define HIP_DEVICE_MEMORY_LIMIT_ENV     "HIP_DEVICE_MEMORY_LIMIT"
 #define HIP_DEVICE_MEMORY_LIMIT_ENV_FMT "HIP_DEVICE_MEMORY_LIMIT_%d"
 #define HIP_DEVICE_MEMORY_SHARED_CACHE  "HIP_DEVICE_MEMORY_SHARED_CACHE"
-#define LIBHIP_LOG_LEVEL_ENV            "LIBHIP_LOG_LEVEL"
 #define ACTIVE_OOM_KILLER_ENV           "ACTIVE_OOM_KILLER"
 
-/* Default shared cache path.
- * Override with HIP_DEVICE_MEMORY_SHARED_CACHE env var for production use.
- * In Kubernetes, the device plugin sets this automatically. */
+/* Shared region path when HIP_DEVICE_MEMORY_SHARED_CACHE is unset. It is in
+ * the container's own /tmp, so processes of one container share a limit. */
 #define DEFAULT_SHARED_CACHE_PATH       "/tmp/hipdevshr.cache"
-
-/* Function entry table types */
-typedef hipError_t (*hip_sym_t)();
-
-typedef struct {
-    void *fn_ptr;
-    const char *name;
-} hip_entry_t;
-
-/* GCC visibility for LD_AUDIT exported symbols */
-#define FUNC_ATTR_VISIBLE __attribute__((visibility("default")))
-
-/* Resolve the real dlsym to avoid recursion through our dlsym hook.
- * Must use dlvsym to get the actual glibc dlsym. */
-static inline void *amvgpu_real_dlsym(void *handle, const char *symbol) {
-    static void *(*_real_dlsym)(void *, const char *) = NULL;
-    if (!_real_dlsym) {
-        _real_dlsym = dlvsym(RTLD_DEFAULT, "dlsym", "GLIBC_2.34");
-        if (!_real_dlsym)
-            _real_dlsym = dlvsym(RTLD_DEFAULT, "dlsym", "GLIBC_2.17");
-        if (!_real_dlsym)
-            _real_dlsym = dlvsym(RTLD_DEFAULT, "dlsym", "GLIBC_2.2.5");
-    }
-    return _real_dlsym ? _real_dlsym(handle, symbol) : NULL;
-}
-
-/* dlsym hook macro - find real function via real dlsym (bypassing our hook) */
-#define REAL_FUNC(name) \
-    static __typeof__(name) *real_##name = NULL; \
-    if (!real_##name) { \
-        real_##name = (__typeof__(name) *)amvgpu_real_dlsym(RTLD_NEXT, #name); \
-        if (!real_##name) { \
-            LOG_ERROR("Failed to resolve real " #name); \
-            return hipErrorNotInitialized; \
-        } \
-    }
-
-/* HIP call forwarding with entry table */
-#define HIP_FIND_ENTRY(table, sym) ({ \
-    void *_entry = NULL; \
-    for (int _i = 0; table[_i].name != NULL; _i++) { \
-        if (strcmp(table[_i].name, #sym) == 0) { \
-            _entry = table[_i].fn_ptr; \
-            break; \
-        } \
-    } \
-    _entry; \
-})
-
-#define HIP_OVERRIDE_CALL(table, sym, ...) \
-    ({ hip_sym_t _fn = (hip_sym_t)HIP_FIND_ENTRY(table, sym); \
-       _fn ? _fn(__VA_ARGS__) : hipErrorNotInitialized; })
-
-/* Global entry tables */
-extern hip_entry_t hip_library_entry[];
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* LIBAMVGPU_H */

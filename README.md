@@ -48,13 +48,11 @@ LD_AUDIT=dist/libamvgpu.so HIP_DEVICE_MEMORY_LIMIT_0=1G LIBHIP_LOG_LEVEL=3 dist/
 rm -f /tmp/hipdevshr.cache
 LD_AUDIT=dist/libamvgpu.so HIP_DEVICE_MEMORY_LIMIT_0=4G python3 -c "import torch; print(torch.cuda.mem_get_info())"
 
-# With CU mask (enforced by the HIP runtime, not this library)
-# ROC_GLOBAL_CU_MASK limits which compute units the process can use.
-# The mask is a hex bitmask where each bit corresponds to one CU.
-# In HAMi, the scheduler calculates the mask for exclusive CU partitioning;
-# this library just makes sure the variable survives into child processes.
+# With a CU slice (enforced by the ROCm runtime, not this library).
+# amd-device-plugin sets HSA_CU_MASK per pod, for example GPU 0, CUs 0-15;
+# this library pins it to the pod spec value, see "Environment variables".
 rm -f /tmp/hipdevshr.cache
-LD_AUDIT=dist/libamvgpu.so HIP_DEVICE_MEMORY_LIMIT_0=1G ROC_GLOBAL_CU_MASK=0xFFFFFFFFFFFFFFFFFFF LIBHIP_LOG_LEVEL=3 dist/test_memory_limit
+LD_AUDIT=dist/libamvgpu.so HIP_DEVICE_MEMORY_LIMIT_0=1G HSA_CU_MASK=0:0-15 LIBHIP_LOG_LEVEL=3 dist/test_memory_limit
 ```
 
 ### Environment variables
@@ -75,7 +73,7 @@ The limit is enforced on `hipMalloc`, `hipMallocManaged`, `hipMallocAsync`, `hip
 ```bash
 # Unit tests (no GPU required)
 for t in test_alloc_tracker test_env_policy test_memory_size; do gcc -o /tmp/$t test/$t.c -I src/hip && /tmp/$t; done
-for t in test_reserve test_shrreg; do gcc -O2 -pthread -o /tmp/$t test/$t.c src/multiprocess/hip_multiprocess_memory_limit.c && /tmp/$t; done
+for t in test_reserve test_shrreg test_init; do gcc -O2 -pthread -o /tmp/$t test/$t.c src/multiprocess/hip_multiprocess_memory_limit.c && /tmp/$t; done
 
 # On-GPU test (requires AMD GPU + ROCm)
 rm -f /tmp/hipdevshr.cache
@@ -89,4 +87,5 @@ test/check_glibc_abi.sh dist/libamvgpu.so
 ## Verified on
 
 - AMD Instinct MI300X (192GB HBM3e)
+- AMD Radeon RX 9060 XT (gfx1200) and RX 9070 XT (gfx1201), through amd-device-plugin
 - ROCm 6.2, 7.0, 7.1, 7.2
