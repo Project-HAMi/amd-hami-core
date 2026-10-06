@@ -69,6 +69,10 @@ docker run --rm libamvgpu-builder bash -c \
 # On-GPU test (requires AMD GPU + ROCm)
 rm -f /tmp/hipdevshr.cache
 LD_AUDIT=dist/libamvgpu.so HIP_DEVICE_MEMORY_LIMIT_0=1G LIBHIP_LOG_LEVEL=3 dist/test_memory_limit
+
+# glibc ABI check: fails if the build picked up a symbol version newer
+# than this library's glibc 2.34 baseline (no GPU required)
+test/check_glibc_abi.sh dist/libamvgpu.so
 ```
 
 ## Verified on
