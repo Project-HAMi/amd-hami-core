@@ -42,9 +42,9 @@ jobs:
       matrix:
         include:
           - rocm: "6.2"
-            image: rocm/dev-ubuntu-22.04:6.2
+            image: rocm/dev-ubuntu-22.04:6.2@sha256:51e0238aaa3aa04c21e13a681194e66d44c653c1005c421b90fcd188d8369549
           - rocm: "7.2"
-            image: rocm/dev-ubuntu-24.04:7.2
+            image: rocm/dev-ubuntu-24.04:7.2@sha256:749f9ee120c739682cc2e1553e62632c2676f98bc49e4d8133f380e0af682bcc
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
