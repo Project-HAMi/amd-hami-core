@@ -12,10 +12,11 @@
  * clamps later hsa_amd_queue_cu_set_mask/hipExtStreamCreateWithCUMask calls
  * to it, so the only way out of the slice is to change the variable itself
  * (setenv/unsetenv/os.environ before the runtime starts). Pin it to the pod
- * spec value so that does not work.
+ * spec value so that does not work. AMD_TASK_PRIORITY is pinned for the same
+ * reason: a process that could rewrite it could raise its own priority.
  */
 static inline int env_is_pinned(const char *name) {
-    return strcmp(name, "HSA_CU_MASK") == 0;
+    return strcmp(name, "HSA_CU_MASK") == 0 || strcmp(name, "AMD_TASK_PRIORITY") == 0;
 }
 
 /*

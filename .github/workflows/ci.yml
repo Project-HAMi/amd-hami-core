@@ -28,7 +28,7 @@ jobs:
         run: |
           set -eu
           san="-Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=all"
-          for t in test_alloc_tracker test_env_policy test_memory_size; do
+          for t in test_alloc_tracker test_env_policy test_memory_size test_queue_priority; do
             gcc $san -o /tmp/$t test/$t.c -I src/hip
             /tmp/$t
           done
