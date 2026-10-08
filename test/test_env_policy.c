@@ -24,6 +24,7 @@ int main(void) {
     assert(strcmp(env_resolve("AMD_TASK_PRIORITY", "0", "1", 1), "1") == 0);
     assert(strcmp(env_resolve("AMD_TASK_PRIORITY", NULL, "1", 1), "1") == 0);
     assert(strcmp(env_resolve("AMD_TASK_PRIORITY", "0", NULL, 1), "0") == 0);
+    assert(strcmp(env_resolve("HIP_OVERSUBSCRIBE", "0", "true", 1), "true") == 0);
     printf("  PASS: env_policy\n");
     return 0;
 }

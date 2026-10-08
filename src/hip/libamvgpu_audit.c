@@ -55,6 +55,7 @@
 #include "../multiprocess/hip_multiprocess_memory_limit.h"
 #include "alloc_tracker.h"
 #include "env_policy.h"
+#include "oversubscribe.h"
 #include "queue_priority.h"
 #include "alloc_size.h"
 #include "../include/proc_file.h"
@@ -119,6 +120,7 @@ static hsa_status_t (*real_hsa_queue_create)(hsa_agent_t, uint32_t, uint32_t,
 static hsa_status_t (*hsa_amd_queue_set_priority)(hsa_queue_t *, int) = NULL;
 /* path libhsa-runtime64.so was loaded from, where hsa_amd_queue_set_priority is looked up */
 static const char *hsa_path = NULL;
+static const char *hip_path = NULL;
 
 /* Current device per-thread */
 static __thread int current_device = 0;
@@ -275,12 +277,31 @@ static hipError_t sync_free(void *ptr, hipStream_t stream) {
     return real_hipFree(ptr);
 }
 
+/* hipMemAttachGlobal, the flag a plain hipMallocManaged call uses. */
+#define HIP_MEM_ATTACH_GLOBAL 0x01
+static char *wrap_getenv(const char *name);
+
 static hipError_t wrap_hipMalloc(void **ptr, size_t size) {
     if (!real_hipMalloc) return hipErrorNotInitialized;
     int dev = current_device;
     int reserved = reserve(dev, size, "hipMalloc");
     if (reserved < 0)
         return hipErrorOutOfMemory;
+    /* Oversubscribed GPUs serve hipMalloc from managed memory so the driver can spill to host RAM. */
+    if (oversubscribe_on(wrap_getenv("HIP_OVERSUBSCRIBE"))) {
+        if (!real_hipMallocManaged && hip_path) {
+            /* An application that never calls hipMallocManaged never binds it, so look it up in the runtime
+             * (reopened by path, NOLOAD returns the base-namespace handle). The lookup runs through
+             * la_symbind64, which records the real address in real_hipMallocManaged and hands back this
+             * library's wrapper, so the returned pointer is dropped. */
+            void *h = dlmopen(LM_ID_BASE, hip_path, RTLD_NOW | RTLD_NOLOAD);
+            if (h)
+                (void)dlsym(h, "hipMallocManaged");
+        }
+        if (real_hipMallocManaged)
+            return finish_alloc(real_hipMallocManaged(ptr, size, HIP_MEM_ATTACH_GLOBAL), reserved, ptr, size, dev, "hipMalloc");
+        LOG_WARN("HIP_OVERSUBSCRIBE is set but hipMallocManaged is not available");
+    }
     return finish_alloc(real_hipMalloc(ptr, size), reserved, ptr, size, dev, "hipMalloc");
 }
 
@@ -679,6 +700,7 @@ static const char *getenv_fallback_vars[] = {
     "HSA_CU_MASK",
     "ROC_GLOBAL_CU_MASK",
     "AMD_TASK_PRIORITY",
+    "HIP_OVERSUBSCRIBE",
     NULL
 };
 
@@ -842,6 +864,7 @@ unsigned int la_objopen(struct link_map *map, Lmid_t lmid,
 
     if (map->l_name && strstr(map->l_name, "libamdhip64")) {
         hip_cookie = id;
+        hip_path = map->l_name;
         LOG_DEBUG("Identified HIP library: %s (cookie %d)", map->l_name, id);
     }
     if (map->l_name && strstr(map->l_name, "libhsa-runtime64"))

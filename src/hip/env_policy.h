@@ -14,9 +14,12 @@
  * (setenv/unsetenv/os.environ before the runtime starts). Pin it to the pod
  * spec value so that does not work. AMD_TASK_PRIORITY is pinned for the same
  * reason: a process that could rewrite it could raise its own priority.
+ * HIP_OVERSUBSCRIBE is pinned so a process cannot turn managed memory on or
+ * off for itself.
  */
 static inline int env_is_pinned(const char *name) {
-    return strcmp(name, "HSA_CU_MASK") == 0 || strcmp(name, "AMD_TASK_PRIORITY") == 0;
+    return strcmp(name, "HSA_CU_MASK") == 0 || strcmp(name, "AMD_TASK_PRIORITY") == 0 ||
+           strcmp(name, "HIP_OVERSUBSCRIBE") == 0;
 }
 
 /*
