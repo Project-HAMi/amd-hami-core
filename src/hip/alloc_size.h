@@ -42,6 +42,32 @@ static inline size_t extent_bytes(size_t width, size_t height, size_t depth) {
     return n;
 }
 
+/*
+ * Bytes per channel of a driver-API array format (hipArray_Format). 0 for an
+ * unknown format, which callers treat as "cannot be accounted".
+ */
+static inline size_t array_format_bytes(int format) {
+    switch (format) {
+    case 0x01: case 0x08: return 1;  /* UNSIGNED_INT8, SIGNED_INT8 */
+    case 0x02: case 0x09: case 0x10: return 2;  /* UNSIGNED_INT16, SIGNED_INT16, HALF */
+    case 0x03: case 0x0a: case 0x20: return 4;  /* UNSIGNED_INT32, SIGNED_INT32, FLOAT */
+    default: return 0;
+    }
+}
+
+/* Bytes of a driver-API array: width x height x depth elements of channels x format. 0 when it cannot be sized. */
+static inline size_t driver_array_bytes(size_t width, size_t height, size_t depth, int format, unsigned int channels) {
+    size_t n = array_format_bytes(format);
+    if (n == 0 || channels == 0 || width == 0)
+        return 0;
+    if (height == 0) height = 1;
+    if (depth == 0) depth = 1;
+    if (__builtin_mul_overflow(n, (size_t)channels, &n) || __builtin_mul_overflow(n, width, &n) ||
+        __builtin_mul_overflow(n, height, &n) || __builtin_mul_overflow(n, depth, &n))
+        return 0;
+    return n;
+}
+
 /* The total memory to report for a device: its limit when one is set and smaller than the real total. */
 static inline size_t clamp_total(size_t real_total, uint64_t limit) {
     return (limit > 0 && limit < real_total) ? (size_t)limit : real_total;

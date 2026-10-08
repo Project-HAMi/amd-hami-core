@@ -24,6 +24,15 @@ int main(void) {
     /* Overflow is reported as 0, never wrapped. */
     assert(array_bytes(32, 32, 32, 32, SIZE_MAX / 2, 4, 1) == 0);
 
+    /* Driver-API arrays: FLOAT x 4 channels = 16 bytes per element. */
+    assert(driver_array_bytes(16384, 8192, 0, 0x20, 4) == (size_t)16 * 16384 * 8192);
+    assert(driver_array_bytes(8192, 8192, 4, 0x20, 4) == (size_t)16 * 8192 * 8192 * 4);
+    assert(driver_array_bytes(100, 0, 0, 0x01, 1) == 100);       /* 8-bit, one channel, 1D */
+    assert(driver_array_bytes(10, 10, 0, 0x10, 2) == (size_t)2 * 2 * 10 * 10);  /* HALF x 2 */
+    assert(driver_array_bytes(10, 10, 0, 0x7f, 4) == 0);         /* unknown format */
+    assert(driver_array_bytes(10, 10, 0, 0x20, 0) == 0);         /* no channels */
+    assert(driver_array_bytes(SIZE_MAX / 2, 4, 1, 0x20, 4) == 0); /* overflow */
+
     assert(extent_bytes(1 << 20, 1024, 2) == (size_t)2 << 30);
     assert(extent_bytes(SIZE_MAX, 2, 1) == 0);
     assert(extent_bytes(0, 5, 5) == 0);
