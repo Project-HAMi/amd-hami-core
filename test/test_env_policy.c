@@ -20,6 +20,10 @@ int main(void) {
     assert(strcmp(env_resolve("ROCR_VISIBLE_DEVICES", "0", "1", 1), "0") == 0);
     assert(strcmp(env_resolve("ROCR_VISIBLE_DEVICES", NULL, "1", 1), "1") == 0);
     assert(env_resolve("HOME", NULL, "/root", 0) == NULL);
+    /* The pod's priority class cannot be rewritten by the process either. */
+    assert(strcmp(env_resolve("AMD_TASK_PRIORITY", "0", "1", 1), "1") == 0);
+    assert(strcmp(env_resolve("AMD_TASK_PRIORITY", NULL, "1", 1), "1") == 0);
+    assert(strcmp(env_resolve("AMD_TASK_PRIORITY", "0", NULL, 1), "0") == 0);
     printf("  PASS: env_policy\n");
     return 0;
 }

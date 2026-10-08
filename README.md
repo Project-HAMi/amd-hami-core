@@ -10,6 +10,7 @@ The `LD_AUDIT` library (`libamvgpu.so`) that [amd-device-plugin](https://github.
 
 - Intercepts HIP memory calls (`hipMalloc`, `hipFree`, `hipMemGetInfo`, and related allocators listed under [Limits](#limits)) to enforce a per-pod memory limit.
 - Does **not** do compute unit (CU) masking itself. That is enforced by the ROCm runtime via `HSA_CU_MASK`, which amd-device-plugin sets per pod.
+- Sets the priority class of every compute queue the HIP runtime creates (`AMD_TASK_PRIORITY`: `0` high, any higher value low), so two pods sharing a card get the high class's work scheduled ahead of the low class's. Applications need no changes.
 - Protects that `HSA_CU_MASK` value: it reads the mask amd-device-plugin set in the pod spec (from `/proc/1/environ`) and pins child processes to it, so a process cannot widen its own slice by changing the environment variable before the runtime starts. See "Environment variable restoration" in `libamvgpu_audit.c`.
 
 **Known gap:** a child process that re-execs itself without `LD_AUDIT` (for example via `env -i`) runs outside this library entirely, with no memory limit. Only a CU/memory limit enforced in the kernel driver itself can close that gap; this library cannot.
@@ -62,6 +63,7 @@ LD_AUDIT=dist/libamvgpu.so HIP_DEVICE_MEMORY_LIMIT_0=1G HSA_CU_MASK=0:0-15 LIBHI
 | `LD_AUDIT` | Path to `libamvgpu.so` |
 | `HIP_DEVICE_MEMORY_LIMIT_<i>` | Memory limit for device `i` (0-63): a whole number with an optional `K`, `M`, `G` or `T` suffix, e.g. `4G`, `4096m`. An invalid value is logged and means no limit. |
 | `HSA_CU_MASK` | Per-GPU CU slice (set by amd-device-plugin; enforced by the ROCm runtime, pinned to the pod spec value by this library) |
+| `AMD_TASK_PRIORITY` | Priority class of the pod's compute queues: `0` is high and a higher number is low; unset leaves the runtime default. Pinned to the pod spec value like `HSA_CU_MASK`. Measured on gfx1200 with two processes running kernels back to back: 248 and 36 kernels/s for high and low, against 142 each without it. |
 | `LIBHIP_LOG_LEVEL` | Log level: 1=ERROR, 2=WARN (default), 3=INFO, 4=DEBUG |
 
 ### Limits

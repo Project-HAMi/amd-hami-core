@@ -55,6 +55,7 @@
 #include "../multiprocess/hip_multiprocess_memory_limit.h"
 #include "alloc_tracker.h"
 #include "env_policy.h"
+#include "queue_priority.h"
 #include "../include/proc_file.h"
 
 /* HIP error codes (subset - we don't link against HIP) */
@@ -64,6 +65,13 @@ typedef int hipError_t;
 #define hipErrorNotInitialized 3
 
 typedef void *hipStream_t;
+
+/* HSA types (subset - we don't link against HSA either). hsa_agent_t is a
+ * one-word struct, passed in a register like the integer it wraps. */
+typedef struct { uint64_t handle; } hsa_agent_t;
+typedef int hsa_status_t;
+typedef struct hsa_queue_s hsa_queue_t;
+#define HSA_STATUS_SUCCESS 0
 
 /* ====================================================================
  * Real HIP function pointers - captured from la_symbind64
@@ -79,6 +87,12 @@ static hipError_t (*real_hipFreeAsync)(void *, hipStream_t) = NULL;
 static hipError_t (*real_hipMallocPitch)(void **, size_t *, size_t, size_t) = NULL;
 static hipError_t (*real_hipExtMallocWithFlags)(void **, size_t, unsigned int) = NULL;
 static char *(*real_getenv)(const char *) = NULL;
+static hsa_status_t (*real_hsa_queue_create)(hsa_agent_t, uint32_t, uint32_t,
+        void (*)(hsa_status_t, hsa_queue_t *, void *), void *, uint32_t, uint32_t,
+        hsa_queue_t **) = NULL;
+static hsa_status_t (*hsa_amd_queue_set_priority)(hsa_queue_t *, int) = NULL;
+/* path libhsa-runtime64.so was loaded from, where hsa_amd_queue_set_priority is looked up */
+static const char *hsa_path = NULL;
 
 /* Current device per-thread */
 static __thread int current_device = 0;
@@ -396,6 +410,7 @@ static const char *getenv_fallback_vars[] = {
     "HIP_VISIBLE_DEVICES",
     "HSA_CU_MASK",
     "ROC_GLOBAL_CU_MASK",
+    "AMD_TASK_PRIORITY",
     NULL
 };
 
@@ -499,6 +514,44 @@ static char *wrap_getenv(const char *name) {
     return (char *)env_resolve(name, val, pod_val, tracked);
 }
 
+/*
+ * Queue priority. The HIP runtime creates every stream's queue through
+ * hsa_queue_create, so setting the priority there covers an application that
+ * never asks for one, unlike hipStreamCreateWithPriority. On two processes
+ * sharing a card the high class runs ahead of the low class, which is the
+ * order AMD_TASK_PRIORITY (amd.com/priority) selects.
+ */
+static hsa_status_t wrap_hsa_queue_create(hsa_agent_t agent, uint32_t size, uint32_t type,
+        void (*callback)(hsa_status_t, hsa_queue_t *, void *), void *data,
+        uint32_t private_segment_size, uint32_t group_segment_size, hsa_queue_t **queue) {
+    hsa_status_t status = real_hsa_queue_create(agent, size, type, callback, data,
+                                                private_segment_size, group_segment_size, queue);
+    if (status != HSA_STATUS_SUCCESS || !queue || !*queue)
+        return status;
+
+    int level = queue_priority_level(wrap_getenv("AMD_TASK_PRIORITY"));
+    if (level == QP_NONE)
+        return status;
+    if (!hsa_amd_queue_set_priority && hsa_path) {
+        /* This library lives in the audit namespace, where dlsym cannot see the
+         * runtime the application loaded. Reopen that copy by path: NOLOAD
+         * returns the base-namespace handle and never maps a second one. */
+        void *h = dlmopen(LM_ID_BASE, hsa_path, RTLD_NOW | RTLD_NOLOAD);
+        if (h)
+            hsa_amd_queue_set_priority = dlsym(h, "hsa_amd_queue_set_priority");
+    }
+    if (!hsa_amd_queue_set_priority) {
+        LOG_WARN("AMD_TASK_PRIORITY is set but hsa_amd_queue_set_priority is not available");
+        return status;
+    }
+    hsa_status_t rc = hsa_amd_queue_set_priority(*queue, level);
+    if (rc != HSA_STATUS_SUCCESS)
+        LOG_WARN("hsa_amd_queue_set_priority(%d) failed: %d", level, rc);
+    else
+        LOG_DEBUG("queue priority set to %d", level);
+    return status;
+}
+
 /* ====================================================================
  * LD_AUDIT interface
  * ==================================================================== */
@@ -523,6 +576,8 @@ unsigned int la_objopen(struct link_map *map, Lmid_t lmid,
         hip_cookie = id;
         LOG_DEBUG("Identified HIP library: %s (cookie %d)", map->l_name, id);
     }
+    if (map->l_name && strstr(map->l_name, "libhsa-runtime64"))
+        hsa_path = map->l_name;
 
     return LA_FLG_BINDTO | LA_FLG_BINDFROM;
 }
@@ -594,6 +649,8 @@ uintptr_t la_symbind32(Elf32_Sym *sym, unsigned int ndx,
      * from_hip callers: the HIP runtime reading ROC_GLOBAL_CU_MASK IS
      * the from_hip caller this fallback exists for. */
     INTERCEPT_ALWAYS(getenv,         real_getenv,                wrap_getenv)
+    /* HIP itself creates the queues, so its own calls are the ones to cover. */
+    INTERCEPT_ALWAYS(hsa_queue_create, real_hsa_queue_create,    wrap_hsa_queue_create)
 
     #undef INTERCEPT_ALWAYS
     #undef INTERCEPT
