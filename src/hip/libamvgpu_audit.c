@@ -56,6 +56,7 @@
 #include "alloc_tracker.h"
 #include "env_policy.h"
 #include "queue_priority.h"
+#include "alloc_size.h"
 #include "../include/proc_file.h"
 
 /* HIP error codes (subset - we don't link against HIP) */
@@ -65,6 +66,16 @@ typedef int hipError_t;
 #define hipErrorNotInitialized 3
 
 typedef void *hipStream_t;
+typedef void *hipArray_t;
+typedef void *hipMemPool_t;
+typedef void *hipMemGenericAllocationHandle_t;
+/* HIP_ARRAY_DESCRIPTOR and HIP_ARRAY3D_DESCRIPTOR of the driver-API array creators (layout only). */
+typedef struct { size_t Width; size_t Height; int Format; unsigned int NumChannels; } HIP_ARRAY_DESCRIPTOR;
+typedef struct { size_t Width; size_t Height; size_t Depth; int Format; unsigned int NumChannels; unsigned int Flags; } HIP_ARRAY3D_DESCRIPTOR;
+/* hipPitchedPtr, hipExtent and hipChannelFormatDesc as in hip_runtime_api.h (layout only). */
+typedef struct { void *ptr; size_t pitch; size_t xsize; size_t ysize; } hipPitchedPtr;
+typedef struct { size_t width; size_t height; size_t depth; } hipExtent;
+typedef struct { int x, y, z, w; int f; } hipChannelFormatDesc;
 
 /* HSA types (subset - we don't link against HSA either). hsa_agent_t is a
  * one-word struct, passed in a register like the integer it wraps. */
@@ -86,6 +97,21 @@ static hipError_t (*real_hipMallocAsync)(void **, size_t, hipStream_t) = NULL;
 static hipError_t (*real_hipFreeAsync)(void *, hipStream_t) = NULL;
 static hipError_t (*real_hipMallocPitch)(void **, size_t *, size_t, size_t) = NULL;
 static hipError_t (*real_hipExtMallocWithFlags)(void **, size_t, unsigned int) = NULL;
+static hipError_t (*real_hipMalloc3D)(hipPitchedPtr *, hipExtent) = NULL;
+static hipError_t (*real_hipMallocArray)(hipArray_t *, const hipChannelFormatDesc *, size_t, size_t, unsigned int) = NULL;
+static hipError_t (*real_hipMalloc3DArray)(hipArray_t *, const hipChannelFormatDesc *, hipExtent, unsigned int) = NULL;
+static hipError_t (*real_hipFreeArray)(hipArray_t) = NULL;
+static hipError_t (*real_hipArrayCreate)(hipArray_t *, const HIP_ARRAY_DESCRIPTOR *) = NULL;
+static hipError_t (*real_hipArray3DCreate)(hipArray_t *, const HIP_ARRAY3D_DESCRIPTOR *) = NULL;
+static hipError_t (*real_hipArrayDestroy)(hipArray_t) = NULL;
+static hipError_t (*real_hipMemAllocPitch)(void **, size_t *, size_t, size_t, unsigned int) = NULL;
+static hipError_t (*real_hipMallocFromPoolAsync)(void **, size_t, hipMemPool_t, hipStream_t) = NULL;
+static hipError_t (*real_hipMemCreate)(hipMemGenericAllocationHandle_t *, size_t, const void *, unsigned long long) = NULL;
+static hipError_t (*real_hipMemRelease)(hipMemGenericAllocationHandle_t) = NULL;
+static hipError_t (*real_hipDeviceTotalMem)(size_t *, int) = NULL;
+static hipError_t (*real_hipGetDevicePropertiesR0600)(void *, int) = NULL;
+static hipError_t (*real_hipGetDeviceProperties)(void *, int) = NULL;
+static hipError_t (*real_hipGetDevicePropertiesR0000)(void *, int) = NULL;
 static char *(*real_getenv)(const char *) = NULL;
 static hsa_status_t (*real_hsa_queue_create)(hsa_agent_t, uint32_t, uint32_t,
         void (*)(hsa_status_t, hsa_queue_t *, void *), void *, uint32_t, uint32_t,
@@ -180,8 +206,9 @@ static void ensure_shrreg_init(void) {
  * full the memory is freed again and reported as out of memory, because its
  * free could never be accounted and the usage would leak for good.
  */
-static hipError_t finish_alloc(hipError_t ret, int reserved, void **ptr,
-                               size_t size, int dev, const char *what) {
+static hipError_t finish_alloc_undo(hipError_t ret, int reserved, void **ptr,
+                                    size_t size, int dev, const char *what,
+                                    hipError_t (*undo)(void *)) {
     if (reserved != 0)
         return ret;  /* no limit on dev: nothing reserved or tracked */
     if (ret != hipSuccess) {
@@ -193,13 +220,18 @@ static hipError_t finish_alloc(hipError_t ret, int reserved, void **ptr,
     tracker_unlock();
     if (full != 0) {
         LOG_ERROR("%s: allocation tracker full, refusing %zu bytes on device %d", what, size, dev);
-        if (real_hipFree)
-            real_hipFree(*ptr);
+        if (undo)
+            undo(*ptr);
         hip_release_device_memory(dev, size);
         return hipErrorOutOfMemory;
     }
     LOG_DEBUG("%s: %zu bytes -> %p (dev %d)", what, size, *ptr, dev);
     return hipSuccess;
+}
+
+static hipError_t finish_alloc(hipError_t ret, int reserved, void **ptr,
+                               size_t size, int dev, const char *what) {
+    return finish_alloc_undo(ret, reserved, ptr, size, dev, what, real_hipFree);
 }
 
 /* Reserve size on the current device, logging a rejection. */
@@ -361,6 +393,242 @@ static hipError_t wrap_hipExtMallocWithFlags(void **ptr, size_t size,
     if (reserved < 0)
         return hipErrorOutOfMemory;
     return finish_alloc(real_hipExtMallocWithFlags(ptr, size, flags), reserved, ptr, size, dev, "hipExtMallocWithFlags");
+}
+
+
+/* ====================================================================
+ * Shaped allocators, pools, virtual memory and the total a device reports
+ * ==================================================================== */
+
+static hipError_t array_undo(void *p) {
+    return real_hipFreeArray ? real_hipFreeArray((hipArray_t)p) : hipErrorNotInitialized;
+}
+
+static hipError_t array_free(void *p, hipStream_t stream) {
+    (void)stream;
+    return array_undo(p);
+}
+
+static hipError_t handle_undo(void *p) {
+    return real_hipMemRelease ? real_hipMemRelease((hipMemGenericAllocationHandle_t)p) : hipErrorNotInitialized;
+}
+
+static hipError_t handle_free(void *p, hipStream_t stream) {
+    (void)stream;
+    return handle_undo(p);
+}
+
+static hipError_t wrap_hipMalloc3D(hipPitchedPtr *pitched, hipExtent extent) {
+    if (!real_hipMalloc3D) return hipErrorNotInitialized;
+    int dev = current_device;
+    size_t estimated = extent_bytes(extent.width, extent.height, extent.depth);
+    if (estimated == 0 || pitched == NULL)
+        return real_hipMalloc3D(pitched, extent);  /* empty or overflowing: HIP rejects it */
+    int reserved = reserve(dev, estimated, "hipMalloc3D");
+    if (reserved < 0)
+        return hipErrorOutOfMemory;
+
+    hipError_t ret = real_hipMalloc3D(pitched, extent);
+    size_t actual = estimated, rows;
+    if (reserved == 0 && ret == hipSuccess &&
+        !__builtin_mul_overflow(pitched->pitch, extent.height, &rows) &&
+        !__builtin_mul_overflow(rows, extent.depth, &actual) && actual > estimated) {
+        /* The row padding is real memory too; it has to fit the limit. */
+        if (hip_reserve_device_memory(dev, actual - estimated) < 0) {
+            LOG_WARN("hipMalloc3D: OOM rejected %zu padded bytes on device %d", actual, dev);
+            if (real_hipFree)
+                real_hipFree(pitched->ptr);
+            hip_release_device_memory(dev, estimated);
+            return hipErrorOutOfMemory;
+        }
+    } else {
+        actual = estimated;
+    }
+    void *ptr = (ret == hipSuccess) ? pitched->ptr : NULL;
+    return finish_alloc(ret, reserved, &ptr, actual, dev, "hipMalloc3D");
+}
+
+static hipError_t wrap_hipMallocArray(hipArray_t *array, const hipChannelFormatDesc *desc,
+                                       size_t width, size_t height, unsigned int flags) {
+    if (!real_hipMallocArray) return hipErrorNotInitialized;
+    int dev = current_device;
+    size_t estimated = desc ? array_bytes(desc->x, desc->y, desc->z, desc->w, width, height, 1) : 0;
+    if (estimated == 0 || array == NULL)
+        return real_hipMallocArray(array, desc, width, height, flags);
+    int reserved = reserve(dev, estimated, "hipMallocArray");
+    if (reserved < 0)
+        return hipErrorOutOfMemory;
+    return finish_alloc_undo(real_hipMallocArray(array, desc, width, height, flags), reserved,
+                             (void **)array, estimated, dev, "hipMallocArray", array_undo);
+}
+
+static hipError_t wrap_hipMalloc3DArray(hipArray_t *array, const hipChannelFormatDesc *desc,
+                                         hipExtent extent, unsigned int flags) {
+    if (!real_hipMalloc3DArray) return hipErrorNotInitialized;
+    int dev = current_device;
+    size_t estimated = desc ? array_bytes(desc->x, desc->y, desc->z, desc->w,
+                                          extent.width, extent.height, extent.depth) : 0;
+    if (estimated == 0 || array == NULL)
+        return real_hipMalloc3DArray(array, desc, extent, flags);
+    int reserved = reserve(dev, estimated, "hipMalloc3DArray");
+    if (reserved < 0)
+        return hipErrorOutOfMemory;
+    return finish_alloc_undo(real_hipMalloc3DArray(array, desc, extent, flags), reserved,
+                             (void **)array, estimated, dev, "hipMalloc3DArray", array_undo);
+}
+
+static hipError_t wrap_hipFreeArray(hipArray_t array) {
+    if (!real_hipFreeArray) return hipErrorNotInitialized;
+    if (array == NULL) return real_hipFreeArray(array);
+    return untracked_free(array, array_free, NULL);
+}
+
+static hipError_t destroy_array_undo(void *p) {
+    return real_hipArrayDestroy ? real_hipArrayDestroy((hipArray_t)p) : hipErrorNotInitialized;
+}
+
+static hipError_t destroy_array_free(void *p, hipStream_t stream) {
+    (void)stream;
+    return destroy_array_undo(p);
+}
+
+static hipError_t wrap_hipArrayCreate(hipArray_t *array, const HIP_ARRAY_DESCRIPTOR *desc) {
+    if (!real_hipArrayCreate) return hipErrorNotInitialized;
+    int dev = current_device;
+    size_t estimated = desc ? driver_array_bytes(desc->Width, desc->Height, 1, desc->Format, desc->NumChannels) : 0;
+    if (estimated == 0 || array == NULL)
+        return real_hipArrayCreate(array, desc);
+    int reserved = reserve(dev, estimated, "hipArrayCreate");
+    if (reserved < 0)
+        return hipErrorOutOfMemory;
+    return finish_alloc_undo(real_hipArrayCreate(array, desc), reserved, (void **)array, estimated, dev,
+                             "hipArrayCreate", destroy_array_undo);
+}
+
+static hipError_t wrap_hipArray3DCreate(hipArray_t *array, const HIP_ARRAY3D_DESCRIPTOR *desc) {
+    if (!real_hipArray3DCreate) return hipErrorNotInitialized;
+    int dev = current_device;
+    size_t estimated = desc ? driver_array_bytes(desc->Width, desc->Height, desc->Depth, desc->Format, desc->NumChannels) : 0;
+    if (estimated == 0 || array == NULL)
+        return real_hipArray3DCreate(array, desc);
+    int reserved = reserve(dev, estimated, "hipArray3DCreate");
+    if (reserved < 0)
+        return hipErrorOutOfMemory;
+    return finish_alloc_undo(real_hipArray3DCreate(array, desc), reserved, (void **)array, estimated, dev,
+                             "hipArray3DCreate", destroy_array_undo);
+}
+
+static hipError_t wrap_hipArrayDestroy(hipArray_t array) {
+    if (!real_hipArrayDestroy) return hipErrorNotInitialized;
+    if (array == NULL) return real_hipArrayDestroy(array);
+    return untracked_free(array, destroy_array_free, NULL);
+}
+
+static hipError_t wrap_hipMemAllocPitch(void **ptr, size_t *pitch, size_t width, size_t height,
+                                         unsigned int element_size) {
+    if (!real_hipMemAllocPitch) return hipErrorNotInitialized;
+    int dev = current_device;
+    size_t estimated;
+    if (__builtin_mul_overflow(width, height, &estimated))
+        return hipErrorOutOfMemory;
+    int reserved = reserve(dev, estimated, "hipMemAllocPitch");
+    if (reserved < 0)
+        return hipErrorOutOfMemory;
+
+    hipError_t ret = real_hipMemAllocPitch(ptr, pitch, width, height, element_size);
+    size_t actual = estimated;
+    if (reserved == 0 && ret == hipSuccess && pitch != NULL &&
+        !__builtin_mul_overflow(*pitch, height, &actual) && actual > estimated) {
+        if (hip_reserve_device_memory(dev, actual - estimated) < 0) {
+            LOG_WARN("hipMemAllocPitch: OOM rejected %zu padded bytes on device %d", actual, dev);
+            if (real_hipFree)
+                real_hipFree(*ptr);
+            hip_release_device_memory(dev, estimated);
+            return hipErrorOutOfMemory;
+        }
+    } else {
+        actual = estimated;
+    }
+    return finish_alloc(ret, reserved, ptr, actual, dev, "hipMemAllocPitch");
+}
+
+static hipError_t wrap_hipMallocFromPoolAsync(void **ptr, size_t size, hipMemPool_t pool,
+                                               hipStream_t stream) {
+    if (!real_hipMallocFromPoolAsync) return hipErrorNotInitialized;
+    int dev = current_device;
+    int reserved = reserve(dev, size, "hipMallocFromPoolAsync");
+    if (reserved < 0)
+        return hipErrorOutOfMemory;
+    return finish_alloc(real_hipMallocFromPoolAsync(ptr, size, pool, stream), reserved, ptr, size, dev,
+                        "hipMallocFromPoolAsync");
+}
+
+/*
+ * Virtual memory: hipMemCreate holds the physical memory. The device is the
+ * current one; a handle created for another device is accounted here too.
+ * ponytail: a handle retained or exported elsewhere is released from the
+ * accounting with its first hipMemRelease; refcount tracking if that ever matters.
+ */
+static hipError_t wrap_hipMemCreate(hipMemGenericAllocationHandle_t *handle, size_t size,
+                                     const void *prop, unsigned long long flags) {
+    if (!real_hipMemCreate) return hipErrorNotInitialized;
+    int dev = current_device;
+    int reserved = reserve(dev, size, "hipMemCreate");
+    if (reserved < 0)
+        return hipErrorOutOfMemory;
+    return finish_alloc_undo(real_hipMemCreate(handle, size, prop, flags), reserved, (void **)handle,
+                             size, dev, "hipMemCreate", handle_undo);
+}
+
+static hipError_t wrap_hipMemRelease(hipMemGenericAllocationHandle_t handle) {
+    if (!real_hipMemRelease) return hipErrorNotInitialized;
+    if (handle == NULL) return real_hipMemRelease(handle);
+    return untracked_free(handle, handle_free, NULL);
+}
+
+/* Offset of totalGlobalMem in hipDeviceProp_tR0600 (after name[256], hipUUID, luid[8], luidDeviceNodeMask)
+ * and in the older hipDeviceProp_t (after name[256]). */
+#define PROP_TOTAL_OFFSET_R0600 288
+#define PROP_TOTAL_OFFSET_LEGACY 256
+
+static void clamp_prop_total(void *props, size_t offset, int device) {
+    ensure_shrreg_init();
+    size_t *total = (size_t *)((char *)props + offset);
+    *total = clamp_total(*total, hip_get_device_memory_limit(device));
+}
+
+static hipError_t wrap_hipDeviceTotalMem(size_t *bytes, int device) {
+    if (!real_hipDeviceTotalMem) return hipErrorNotInitialized;
+    hipError_t ret = real_hipDeviceTotalMem(bytes, device);
+    if (ret == hipSuccess && bytes != NULL) {
+        ensure_shrreg_init();
+        *bytes = clamp_total(*bytes, hip_get_device_memory_limit(device));
+    }
+    return ret;
+}
+
+static hipError_t wrap_hipGetDevicePropertiesR0600(void *props, int device) {
+    if (!real_hipGetDevicePropertiesR0600) return hipErrorNotInitialized;
+    hipError_t ret = real_hipGetDevicePropertiesR0600(props, device);
+    if (ret == hipSuccess && props != NULL)
+        clamp_prop_total(props, PROP_TOTAL_OFFSET_R0600, device);
+    return ret;
+}
+
+static hipError_t wrap_hipGetDevicePropertiesR0000(void *props, int device) {
+    if (!real_hipGetDevicePropertiesR0000) return hipErrorNotInitialized;
+    hipError_t ret = real_hipGetDevicePropertiesR0000(props, device);
+    if (ret == hipSuccess && props != NULL)
+        clamp_prop_total(props, PROP_TOTAL_OFFSET_LEGACY, device);
+    return ret;
+}
+
+static hipError_t wrap_hipGetDeviceProperties(void *props, int device) {
+    if (!real_hipGetDeviceProperties) return hipErrorNotInitialized;
+    hipError_t ret = real_hipGetDeviceProperties(props, device);
+    if (ret == hipSuccess && props != NULL)
+        clamp_prop_total(props, PROP_TOTAL_OFFSET_LEGACY, device);
+    return ret;
 }
 
 /* ====================================================================
@@ -645,6 +913,22 @@ uintptr_t la_symbind32(Elf32_Sym *sym, unsigned int ndx,
     INTERCEPT(hipFreeAsync,          real_hipFreeAsync,          wrap_hipFreeAsync)
     INTERCEPT(hipMallocPitch,        real_hipMallocPitch,        wrap_hipMallocPitch)
     INTERCEPT(hipExtMallocWithFlags, real_hipExtMallocWithFlags, wrap_hipExtMallocWithFlags)
+    INTERCEPT(hipMalloc3D,           real_hipMalloc3D,           wrap_hipMalloc3D)
+    INTERCEPT(hipMallocArray,        real_hipMallocArray,        wrap_hipMallocArray)
+    INTERCEPT(hipMalloc3DArray,      real_hipMalloc3DArray,      wrap_hipMalloc3DArray)
+    INTERCEPT(hipFreeArray,          real_hipFreeArray,          wrap_hipFreeArray)
+    INTERCEPT(hipArrayCreate,        real_hipArrayCreate,        wrap_hipArrayCreate)
+    INTERCEPT(hipArray3DCreate,      real_hipArray3DCreate,      wrap_hipArray3DCreate)
+    INTERCEPT(hipArrayDestroy,       real_hipArrayDestroy,       wrap_hipArrayDestroy)
+    INTERCEPT(hipMemAllocPitch,      real_hipMemAllocPitch,      wrap_hipMemAllocPitch)
+    INTERCEPT(hipMallocFromPoolAsync, real_hipMallocFromPoolAsync, wrap_hipMallocFromPoolAsync)
+    INTERCEPT(hipMemCreate,          real_hipMemCreate,          wrap_hipMemCreate)
+    INTERCEPT(hipMemRelease,         real_hipMemRelease,         wrap_hipMemRelease)
+    /* Like hipMemGetInfo, what a device reports as its total is virtualized for every caller. */
+    INTERCEPT_ALWAYS(hipDeviceTotalMem,            real_hipDeviceTotalMem,            wrap_hipDeviceTotalMem)
+    INTERCEPT_ALWAYS(hipGetDevicePropertiesR0600,  real_hipGetDevicePropertiesR0600,  wrap_hipGetDevicePropertiesR0600)
+    INTERCEPT_ALWAYS(hipGetDeviceProperties,       real_hipGetDeviceProperties,       wrap_hipGetDeviceProperties)
+    INTERCEPT_ALWAYS(hipGetDevicePropertiesR0000,  real_hipGetDevicePropertiesR0000,  wrap_hipGetDevicePropertiesR0000)
     /* getenv must stay unconditional (INTERCEPT_ALWAYS), including for
      * from_hip callers: the HIP runtime reading ROC_GLOBAL_CU_MASK IS
      * the from_hip caller this fallback exists for. */

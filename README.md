@@ -68,7 +68,7 @@ LD_AUDIT=dist/libamvgpu.so HIP_DEVICE_MEMORY_LIMIT_0=1G HSA_CU_MASK=0:0-15 LIBHI
 
 ### Limits
 
-The limit is enforced on `hipMalloc`, `hipMallocManaged`, `hipMallocAsync`, `hipMallocPitch` and `hipExtMallocWithFlags`, and checked atomically across threads and processes. Allocations made through `hipMemCreate`/`hipMemMap`, `hipMallocFromPoolAsync`, `hipMalloc3D` or `hipMallocArray` are not intercepted yet; the dmem cgroup cap set by amd-device-plugin, where available, still covers them.
+The limit is enforced on `hipMalloc`, `hipMallocManaged`, `hipMallocAsync`, `hipMallocFromPoolAsync`, `hipMallocPitch`, `hipMalloc3D`, `hipMallocArray`, `hipMalloc3DArray`, `hipMemCreate` and `hipExtMallocWithFlags`, and checked atomically across threads and processes. `hipMemGetInfo`, `hipDeviceTotalMem` and the `totalGlobalMem` of `hipGetDeviceProperties` report the limit as the device's total. The driver-API allocators `hipArrayCreate`, `hipArray3DCreate` and `hipMemAllocPitch` are counted too. `hipMallocMipmappedArray` is not intercepted yet; the dmem cgroup cap set by amd-device-plugin, where available, still covers it.
 
 ## Test
 
