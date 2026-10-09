@@ -64,6 +64,7 @@ LD_AUDIT=dist/libamvgpu.so HIP_DEVICE_MEMORY_LIMIT_0=1G HSA_CU_MASK=0:0-15 LIBHI
 | `HIP_DEVICE_MEMORY_LIMIT_<i>` | Memory limit for device `i` (0-63): a whole number with an optional `K`, `M`, `G` or `T` suffix, e.g. `4G`, `4096m`. An invalid value is logged and means no limit. |
 | `HSA_CU_MASK` | Per-GPU CU slice (set by amd-device-plugin; enforced by the ROCm runtime, pinned to the pod spec value by this library) |
 | `AMD_TASK_PRIORITY` | Priority class of the pod's compute queues: `0` is high and a higher number is low; unset leaves the runtime default. Pinned to the pod spec value like `HSA_CU_MASK`. Measured on gfx1200 with two processes running kernels back to back: 248 and 36 kernels/s for high and low, against 142 each without it. |
+| `HIP_OVERSUBSCRIBE` | `true` or `1` serves `hipMalloc` from managed memory (`hipMallocManaged`), so a pod whose limit is above the physical VRAM can allocate past it and the driver spills to host RAM. The memory limit still applies. Off by default; set by amd-device-plugin on a GPU registered with a memory scale above 1. Pinned to the pod spec value. Measured on a 16 GiB gfx1200: a 20 GiB `hipMalloc` fails without it and succeeds, with every page touched from the GPU, with it. |
 | `LIBHIP_LOG_LEVEL` | Log level: 1=ERROR, 2=WARN (default), 3=INFO, 4=DEBUG |
 
 ### Limits
