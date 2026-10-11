@@ -11,7 +11,7 @@ requirement.
 ## Building and testing
 
 ```bash
-# Build libamvgpu.so (requires ROCm; set ROCM_HOME if not /opt/rocm)
+# Build libamvgpu.so (requires ROCm, CMake, make and gcc; set ROCM_HOME if not /opt/rocm)
 make -f Makefile.hip
 
 # Build and run the on-GPU test (requires an AMD GPU)

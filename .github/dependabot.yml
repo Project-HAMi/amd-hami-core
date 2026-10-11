@@ -13,3 +13,8 @@ updates:
       - "/.github/rocm"
     schedule:
       interval: "weekly"
+    # rocm-6.2.Dockerfile is the ROCm 6.2 baseline on purpose: only its digest may move, never
+    # its tag (Dependabot otherwise tries 6.2 to 7.2 and the update job fails).
+    ignore:
+      - dependency-name: "rocm/dev-ubuntu-22.04"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
