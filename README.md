@@ -9,4 +9,4 @@ The `LD_AUDIT` library (`libamvgpu.so`) that [amd-device-plugin](https://github.
 The status and the guide for this library live in the amd-device-plugin repository, in one place for both projects:
 
 - [STATUS.md](https://github.com/Project-HAMi/amd-device-plugin/blob/main/STATUS.md): what was checked on a real GPU, the problems found and fixed, and what is left.
-- [ONBOARDING.md](https://github.com/Project-HAMi/amd-device-plugin/blob/main/ONBOARDING.md): how the plugin and this library work, how to build and test, for someone new (this library is Part 2).
+- [ONBOARDING.md](https://github.com/Project-HAMi/amd-device-plugin/blob/main/ONBOARDING.md): how the plugin and this library work, how to build and test, for someone new (this library is section 5).
