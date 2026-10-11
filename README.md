@@ -90,5 +90,6 @@ test/check_glibc_abi.sh dist/libamvgpu.so
 ## Verified on
 
 - AMD Instinct MI300X (192GB HBM3e)
+- AMD Instinct MI325X (a virtual function, gfx942, 304 CUs), through amd-device-plugin on a real node: in a 25 percent slice (`HSA_CU_MASK=0:0-75`) a compute kernel ran at 215 kernels/s, a `setenv("HSA_CU_MASK", ...)` before HIP starts did not widen it (215 with the library, 1015 kernels/s without it); two processes on that slice got 144.7 and 72.3 kernels/s with `AMD_TASK_PRIORITY` 0 and 3 against 108.7 and 108.5 without; with a 1 GiB limit `hipMalloc3D`, `hipMallocArray`, `hipMalloc3DArray`, `hipMallocFromPoolAsync` and `hipMemCreate` all returned out of memory and `hipMemGetInfo` reported 1 GiB; three concurrent 1.5 GiB allocations under a 4 GiB limit gave exactly two successes in each of three rounds. A `hipMalloc` larger than the VRAM served from managed memory was not checked there (XNACK is off on the virtual function).
 - AMD Radeon RX 9060 XT (gfx1200) and RX 9070 XT (gfx1201), through amd-device-plugin
 - ROCm 6.2, 7.0, 7.1, 7.2
