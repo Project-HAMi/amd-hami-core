@@ -20,8 +20,13 @@ rm -f /tmp/hipdevshr.cache
 LD_AUDIT=build-hip/libamvgpu.so HIP_DEVICE_MEMORY_LIMIT_0=1G LIBHIP_LOG_LEVEL=3 build-hip/test_memory_limit
 
 # Unit tests (no GPU required)
-for t in test_alloc_tracker test_env_policy test_memory_size; do gcc -o /tmp/$t test/$t.c -I src/hip && /tmp/$t; done
+# CI builds these with: -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=all
+for t in test_alloc_tracker test_env_policy test_memory_size test_queue_priority test_alloc_size test_oversubscribe; do gcc -o /tmp/$t test/$t.c -I src/hip && /tmp/$t; done
 for t in test_reserve test_shrreg test_init test_retry; do gcc -O2 -pthread -o /tmp/$t test/$t.c src/multiprocess/hip_multiprocess_memory_limit.c && /tmp/$t; done
+
+# The threaded tests also run under ThreadSanitizer in CI. On a kernel with a wide address
+# randomization range TSan aborts with "unexpected memory mapping"; run it with ASLR off:
+for t in test_reserve test_init test_retry; do gcc -O1 -g -fsanitize=thread -pthread -o /tmp/${t}_tsan test/$t.c src/multiprocess/hip_multiprocess_memory_limit.c && setarch "$(uname -m)" -R /tmp/${t}_tsan; done
 
 # glibc ABI regression check (no GPU required)
 test/check_glibc_abi.sh build-hip/libamvgpu.so
