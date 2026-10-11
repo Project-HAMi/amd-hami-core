@@ -1,8 +1,8 @@
 header:
   schema-version: 2.1.0
-  last-updated: '2026-10-06'
-  last-reviewed: '2026-10-06'
-  url: https://raw.githubusercontent.com/Project-HAMi/amd-hami-core/main/security-insights.yml
+  last-updated: '2026-10-11'
+  last-reviewed: '2026-10-11'
+  url: https://raw.githubusercontent.com/Project-HAMi/amd-hami-core/main/SECURITY-INSIGHTS.yml
   comment: |
     amd-hami-core is one of the codebases that make up the HAMi project. It is
     consumed as the amd-hami-core git submodule by Project-HAMi/amd-device-plugin,
@@ -35,7 +35,7 @@ project:
   vulnerability-reporting:
     reports-accepted: true
     bug-bounty-available: false
-    security-policy: https://github.com/Project-HAMi/HAMi/security/policy
+    policy: https://github.com/Project-HAMi/HAMi/security/policy
     comment: |
       Reports are accepted through the HAMi advisory form at
       https://github.com/Project-HAMi/HAMi/security/advisories/new.
@@ -90,7 +90,7 @@ repository:
           No self assessment has been completed.
     tools:
       - name: GitHub secret scanning
-        type: secret-scanning
+        type: secret
         version: latest
         rulesets:
           - built-in
