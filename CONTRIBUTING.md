@@ -32,7 +32,7 @@ for t in test_reserve test_init test_retry; do gcc -O1 -g -fsanitize=thread -pth
 test/check_glibc_abi.sh build-hip/libamvgpu.so
 ```
 
-See the [README](README.md) for the Docker-based build and more usage
+See [ONBOARDING.md](https://github.com/Project-HAMi/amd-device-plugin/blob/main/ONBOARDING.md) (Part 2) for the Docker-based build and more usage
 examples.
 
 ## Submitting a change

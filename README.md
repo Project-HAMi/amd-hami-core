@@ -4,92 +4,9 @@
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Project-HAMi/amd-hami-core/badge)](https://securityscorecards.dev/viewer/?uri=github.com/Project-HAMi/amd-hami-core)
 [![License](https://img.shields.io/github/license/Project-HAMi/amd-hami-core)](LICENSE)
 
-The `LD_AUDIT` library (`libamvgpu.so`) that [amd-device-plugin](https://github.com/Project-HAMi/amd-device-plugin) uses to enforce a per-pod AMD GPU memory limit, as part of [HAMi](https://github.com/Project-HAMi/HAMi)'s GPU sharing.
+The `LD_AUDIT` library (`libamvgpu.so`) that [amd-device-plugin](https://github.com/Project-HAMi/amd-device-plugin) uses to limit the memory of AMD GPU pods under [HAMi](https://github.com/Project-HAMi/HAMi).
 
-## What it does
+The status and the guide for this library live in the amd-device-plugin repository, in one place for both projects:
 
-- Intercepts HIP memory calls (`hipMalloc`, `hipFree`, `hipMemGetInfo`, and related allocators listed under [Limits](#limits)) to enforce a per-pod memory limit.
-- Does **not** do compute unit (CU) masking itself. That is enforced by the ROCm runtime via `HSA_CU_MASK`, which amd-device-plugin sets per pod.
-- Sets the priority class of every compute queue the HIP runtime creates (`AMD_TASK_PRIORITY`: `0` high, any higher value low), so two pods sharing a card get the high class's work scheduled ahead of the low class's. Applications need no changes.
-- Protects that `HSA_CU_MASK` value: it reads the mask amd-device-plugin set in the pod spec (from `/proc/1/environ`) and pins child processes to it, so a process cannot widen its own slice by changing the environment variable before the runtime starts. See "Environment variable restoration" in `libamvgpu_audit.c`.
-
-**Known gap:** a child process that re-execs itself without `LD_AUDIT` (for example via `env -i`) runs outside this library entirely, with no memory limit. Only a CU/memory limit enforced in the kernel driver itself can close that gap; this library cannot.
-
-## Build
-
-```bash
-# Match ROCM_IMAGE to your host ROCm version.
-# ROCm 6.x: rocm/dev-ubuntu-22.04:6.2
-# ROCm 7.x: rocm/dev-ubuntu-24.04:7.2
-
-docker build -f Dockerfile.hip \
-  --build-arg ROCM_IMAGE=rocm/dev-ubuntu-24.04:7.2 \
-  -t libamvgpu-builder .
-
-# Extract artifacts
-docker run --rm -v $(pwd)/dist:/dist libamvgpu-builder
-# Output: dist/libamvgpu.so, dist/test_memory_limit
-```
-
-## Usage
-
-Requires AMD GPU + ROCm. Clear the shared memory cache before each run
-to avoid stale limits from previous sessions:
-
-```bash
-rm -f /tmp/hipdevshr.cache
-```
-
-```bash
-# Memory limit test
-rm -f /tmp/hipdevshr.cache
-LD_AUDIT=dist/libamvgpu.so HIP_DEVICE_MEMORY_LIMIT_0=1G LIBHIP_LOG_LEVEL=3 dist/test_memory_limit
-
-# With PyTorch (requires: pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/rocm7.2)
-rm -f /tmp/hipdevshr.cache
-LD_AUDIT=dist/libamvgpu.so HIP_DEVICE_MEMORY_LIMIT_0=4G python3 -c "import torch; print(torch.cuda.mem_get_info())"
-
-# With a CU slice (enforced by the ROCm runtime, not this library).
-# amd-device-plugin sets HSA_CU_MASK per pod, for example GPU 0, CUs 0-15;
-# this library pins it to the pod spec value, see "Environment variables".
-rm -f /tmp/hipdevshr.cache
-LD_AUDIT=dist/libamvgpu.so HIP_DEVICE_MEMORY_LIMIT_0=1G HSA_CU_MASK=0:0-15 LIBHIP_LOG_LEVEL=3 dist/test_memory_limit
-```
-
-### Environment variables
-
-| Variable | Description |
-|----------|-------------|
-| `LD_AUDIT` | Path to `libamvgpu.so` |
-| `HIP_DEVICE_MEMORY_LIMIT_<i>` | Memory limit for device `i` (0-63): a whole number with an optional `K`, `M`, `G` or `T` suffix, e.g. `4G`, `4096m`. An invalid value is logged and means no limit. |
-| `HSA_CU_MASK` | Per-GPU CU slice (set by amd-device-plugin; enforced by the ROCm runtime, pinned to the pod spec value by this library) |
-| `AMD_TASK_PRIORITY` | Priority class of the pod's compute queues: `0` is high and a higher number is low; unset leaves the runtime default. Pinned to the pod spec value like `HSA_CU_MASK`. Measured on gfx1200 with two processes running kernels back to back: 248 and 36 kernels/s for high and low, against 142 each without it. |
-| `HIP_OVERSUBSCRIBE` | `true` or `1` serves `hipMalloc` from managed memory (`hipMallocManaged`), so a pod whose limit is above the physical VRAM can allocate past it and the driver spills to host RAM. The memory limit still applies. Off by default; set by amd-device-plugin on a GPU registered with a memory scale above 1. Pinned to the pod spec value. Measured on a 16 GiB gfx1200: a 20 GiB `hipMalloc` fails without it and succeeds, with every page touched from the GPU, with it. |
-| `LIBHIP_LOG_LEVEL` | Log level: 1=ERROR, 2=WARN (default), 3=INFO, 4=DEBUG |
-
-### Limits
-
-The limit is enforced on `hipMalloc`, `hipMallocManaged`, `hipMallocAsync`, `hipMallocFromPoolAsync`, `hipMallocPitch`, `hipMalloc3D`, `hipMallocArray`, `hipMalloc3DArray`, `hipMemCreate` and `hipExtMallocWithFlags`, and checked atomically across threads and processes. `hipMemGetInfo`, `hipDeviceTotalMem` and the `totalGlobalMem` of `hipGetDeviceProperties` report the limit as the device's total. The driver-API allocators `hipArrayCreate`, `hipArray3DCreate` and `hipMemAllocPitch` are counted too. `hipMallocMipmappedArray` is not intercepted yet; the dmem cgroup cap set by amd-device-plugin, where available, still covers it.
-
-## Test
-
-```bash
-# Unit tests (no GPU required)
-for t in test_alloc_tracker test_env_policy test_memory_size; do gcc -o /tmp/$t test/$t.c -I src/hip && /tmp/$t; done
-for t in test_reserve test_shrreg test_init test_retry; do gcc -O2 -pthread -o /tmp/$t test/$t.c src/multiprocess/hip_multiprocess_memory_limit.c && /tmp/$t; done
-
-# On-GPU test (requires AMD GPU + ROCm)
-rm -f /tmp/hipdevshr.cache
-LD_AUDIT=dist/libamvgpu.so HIP_DEVICE_MEMORY_LIMIT_0=1G LIBHIP_LOG_LEVEL=3 dist/test_memory_limit
-
-# glibc ABI check: fails if the build picked up a symbol version newer
-# than this library's glibc 2.34 baseline (no GPU required)
-test/check_glibc_abi.sh dist/libamvgpu.so
-```
-
-## Verified on
-
-- AMD Instinct MI300X (192GB HBM3e)
-- AMD Instinct MI325X (a virtual function, gfx942, 304 CUs), through amd-device-plugin on a real node: in a 25 percent slice (`HSA_CU_MASK=0:0-75`) a compute kernel ran at 215 kernels/s, a `setenv("HSA_CU_MASK", ...)` before HIP starts did not widen it (215 with the library, 1015 kernels/s without it); two processes on that slice got 144.7 and 72.3 kernels/s with `AMD_TASK_PRIORITY` 0 and 3 against 108.7 and 108.5 without; with a 1 GiB limit `hipMalloc3D`, `hipMallocArray`, `hipMalloc3DArray`, `hipMallocFromPoolAsync` and `hipMemCreate` all returned out of memory and `hipMemGetInfo` reported 1 GiB; three concurrent 1.5 GiB allocations under a 4 GiB limit gave exactly two successes in each of three rounds. A `hipMalloc` larger than the VRAM served from managed memory was not checked there (XNACK is off on the virtual function).
-- AMD Radeon RX 9060 XT (gfx1200) and RX 9070 XT (gfx1201), through amd-device-plugin
-- ROCm 6.2, 7.0, 7.1, 7.2
+- [STATUS.md](https://github.com/Project-HAMi/amd-device-plugin/blob/main/STATUS.md): what was checked on a real GPU, the problems found and fixed, and what is left.
+- [ONBOARDING.md](https://github.com/Project-HAMi/amd-device-plugin/blob/main/ONBOARDING.md): how the plugin and this library work, how to build and test, for someone new (this library is Part 2).
