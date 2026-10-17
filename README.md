@@ -4,7 +4,7 @@
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Project-HAMi/amd-hami-core/badge)](https://securityscorecards.dev/viewer/?uri=github.com/Project-HAMi/amd-hami-core)
 [![License](https://img.shields.io/github/license/Project-HAMi/amd-hami-core)](LICENSE)
 
-The `LD_AUDIT` library (`libamvgpu.so`) that [amd-device-plugin](https://github.com/Project-HAMi/amd-device-plugin) uses to limit the memory of AMD GPU pods under [HAMi](https://github.com/Project-HAMi/HAMi).
+The `LD_AUDIT` library (`libamvgpu.so`) that limits the memory of AMD GPU pods under [HAMi](https://github.com/Project-HAMi/HAMi). [amd-device-plugin](https://github.com/Project-HAMi/amd-device-plugin) and [amd-dra-driver](https://github.com/Project-HAMi/amd-dra-driver) both build it from this repository as a submodule and mount it into pods.
 
 The status and the guide for this library live in the amd-device-plugin repository, in one place for both projects:
 
