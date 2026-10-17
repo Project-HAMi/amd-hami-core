@@ -1,7 +1,7 @@
 header:
   schema-version: 2.1.0
-  last-updated: '2026-10-11'
-  last-reviewed: '2026-10-11'
+  last-updated: '2026-10-17'
+  last-reviewed: '2026-10-17'
   url: https://raw.githubusercontent.com/Project-HAMi/amd-hami-core/main/SECURITY-INSIGHTS.yml
   comment: |
     amd-hami-core is one of the codebases that make up the HAMi project. It is
@@ -90,7 +90,8 @@ repository:
           No self assessment has been completed.
     tools:
       - name: GitHub secret scanning
-        type: secret
+        # OpenSSF baseline scanners before v0.32.1 only read secret-scanning.
+        type: secret-scanning
         version: latest
         rulesets:
           - built-in
